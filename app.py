@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from functools import partial
 from pathlib import Path
@@ -17,6 +18,7 @@ APP_DIR = Path(__file__).parent.resolve()
 LIBRARY_DIR = Path(os.getenv("PYLIBRO_LIBRARY_DIR", APP_DIR / "books"))
 CACHE_DIR = Path(os.getenv("PYLIBRO_CACHE_DIR", APP_DIR / ".pylibro_cache"))
 MAX_UPLOAD_MB = int(os.getenv("PYLIBRO_MAX_UPLOAD_MB", "100"))
+ALLOW_SERVER_SHUTDOWN = os.getenv("PYLIBRO_ALLOW_SHUTDOWN", "true").lower() == "true"
 
 library = EpubLibrary(LIBRARY_DIR, CACHE_DIR)
 app.add_static_files("/cache", str(CACHE_DIR))
@@ -92,6 +94,25 @@ ui.add_css(
       border-radius: 13px !important; height: 42px; padding-inline: 18px !important;
       box-shadow: 0 8px 30px rgba(193,234,76,.12);
     }
+    .stop-server-btn {
+      width: 42px; height: 42px; color: #929992 !important; border: 1px solid var(--line);
+      background: rgba(255,255,255,.025) !important; transition: color .2s, border-color .2s, background .2s;
+    }
+    .stop-server-btn:hover {
+      color: #ff8f86 !important; border-color: rgba(255,105,97,.35); background: rgba(255,105,97,.08) !important;
+    }
+    .shutdown-card {
+      width: min(440px, calc(100vw - 32px)); padding: 30px !important; color: var(--ink) !important;
+      border: 1px solid var(--line); border-radius: 22px !important; background: #15191f !important;
+      box-shadow: 0 28px 80px rgba(0,0,0,.55) !important;
+    }
+    .shutdown-icon {
+      width: 54px; height: 54px; display: grid; place-items: center; color: #ff8f86;
+      border-radius: 16px; border: 1px solid rgba(255,105,97,.2); background: rgba(255,105,97,.08);
+    }
+    .shutdown-title { margin-top: 20px; font-size: 21px; font-weight: 720; letter-spacing: -.5px; }
+    .shutdown-copy { margin-top: 8px; color: #878e87; font-size: 13px; line-height: 1.65; }
+    .shutdown-confirm { color: #fff !important; background: #d95c55 !important; border-radius: 11px !important; font-weight: 700; }
 
     /* Hero */
     .page-shell { width: min(1440px, 92vw); margin: 0 auto; padding: 118px 0 70px; }
@@ -301,6 +322,40 @@ def library_page() -> None:
         if uploader is not None:
             uploader.run_method("pickFiles")
 
+    async def shutdown_server() -> None:
+        shutdown_dialog.close()
+        if os.getenv("PYLIBRO_RELOAD", "false").lower() == "true":
+            ui.notify(
+                "Server shutdown is unavailable while development reload is enabled.",
+                type="warning",
+                icon="warning_amber",
+                position="bottom-right",
+            )
+            return
+        ui.notify(
+            "PyLibro is shutting down…",
+            type="ongoing",
+            icon="power_settings_new",
+            position="center",
+            timeout=900,
+        )
+        await asyncio.sleep(0.75)  # let the browser render the final status message
+        app.shutdown()
+
+    shutdown_dialog = ui.dialog().props('persistent transition-show="scale" transition-hide="scale"')
+    with shutdown_dialog, ui.card().classes("shutdown-card"):
+        with ui.element("div").classes("shutdown-icon"):
+            ui.icon("power_settings_new", size="27px")
+        ui.label("Stop the PyLibro server?").classes("shutdown-title")
+        ui.label(
+            "This closes the web app for every connected reader. Your EPUB files and reading library will stay safely on disk."
+        ).classes("shutdown-copy")
+        with ui.row().classes("w-full justify-end gap-2 q-mt-lg"):
+            ui.button("Keep running", on_click=shutdown_dialog.close).props("flat no-caps color=grey-5")
+            ui.button("Stop server", icon="power_settings_new", on_click=shutdown_server).props(
+                "unelevated no-caps"
+            ).classes("shutdown-confirm")
+
     with ui.header().classes("app-header"):
         with ui.row().classes("header-inner items-center justify-between no-wrap"):
             with ui.row().classes("items-center no-wrap gap-3"):
@@ -319,9 +374,14 @@ def library_page() -> None:
                     icon="photo_library",
                     on_click=lambda: ui.notify("Open a book's image gallery from its cover", icon="collections"),
                 ).props("flat no-caps").classes("nav-pill")
-            ui.button("Add book", icon="add", on_click=open_upload_picker).props("unelevated no-caps").classes(
-                "add-book-btn"
-            )
+            with ui.row().classes("header-actions items-center no-wrap gap-2"):
+                if ALLOW_SERVER_SHUTDOWN:
+                    ui.button(icon="power_settings_new", on_click=shutdown_dialog.open).props(
+                        'flat round aria-label="Stop PyLibro server"'
+                    ).classes("stop-server-btn").tooltip("Stop server")
+                ui.button("Add book", icon="add", on_click=open_upload_picker).props("unelevated no-caps").classes(
+                    "add-book-btn"
+                )
 
     with ui.column().classes("page-shell gap-0"):
         with ui.element("section").classes("hero-section"):
