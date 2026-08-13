@@ -1,0 +1,5 @@
+nicegui>=3.16,<4.0
+EbookLib>=0.20,<0.21
+Pillow>=11.3,<13.0
+beautifulsoup4>=4.13,<5.0
+bleach>=6.2,<7.0

@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# PyLibro runtime data
+.pylibro_cache/
+books/*
+!books/.gitkeep
+
+# Editors / OS
+.DS_Store
+.vscode/
+.idea/

@@ -1,0 +1,15 @@
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = [
+  "BLE001",  # Library boundaries intentionally isolate malformed third-party EPUBs.
+  "E501",    # UI labels and fluent NiceGUI declarations are clearer on one line.
+  "SIM117",  # Nested NiceGUI contexts represent the rendered DOM hierarchy.
+]

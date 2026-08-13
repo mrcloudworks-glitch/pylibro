@@ -1,0 +1,718 @@
+"""PyLibro — a polished, local-first EPUB library built with NiceGUI."""
+
+from __future__ import annotations
+
+import os
+from functools import partial
+from pathlib import Path
+
+from fastapi import HTTPException
+from fastapi.responses import FileResponse
+from nicegui import app, events, run, ui
+from starlette.formparsers import MultiPartParser
+
+from epub_parser import BookInfo, EpubError, EpubLibrary, ImageAsset, human_size
+
+APP_DIR = Path(__file__).parent.resolve()
+LIBRARY_DIR = Path(os.getenv("PYLIBRO_LIBRARY_DIR", APP_DIR / "books"))
+CACHE_DIR = Path(os.getenv("PYLIBRO_CACHE_DIR", APP_DIR / ".pylibro_cache"))
+MAX_UPLOAD_MB = int(os.getenv("PYLIBRO_MAX_UPLOAD_MB", "100"))
+
+library = EpubLibrary(LIBRARY_DIR, CACHE_DIR)
+app.add_static_files("/cache", str(CACHE_DIR))
+# Keep modest uploads off RAM while still allowing Starlette to spool efficiently.
+MultiPartParser.spool_max_size = 8 * 1024 * 1024
+
+
+@app.get("/api/books/{book_id}/download")
+def download_endpoint(book_id: str) -> FileResponse:
+    book = library.find_by_id(book_id)
+    if book is None:
+        raise HTTPException(status_code=404, detail="Book not found")
+    return FileResponse(
+        path=book.file_path,
+        filename=book.file_name,
+        media_type="application/epub+zip",
+    )
+
+
+ui.add_head_html(
+    """
+    <meta name="theme-color" content="#090b0f">
+    <meta name="description" content="A beautiful, local-first EPUB library and reader.">
+    """,
+    shared=True,
+)
+
+ui.add_css(
+    r"""
+    :root {
+      --ink: #f5f7f2;
+      --muted: #92988f;
+      --muted-2: #676d68;
+      --surface: #111419;
+      --surface-2: #171b21;
+      --line: rgba(255, 255, 255, .085);
+      --acid: #d7ff63;
+      --acid-soft: rgba(215, 255, 99, .14);
+      --orange: #ff9c67;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; background: #090b0f; }
+    body.pylibro-body {
+      margin: 0; color: var(--ink); background:
+        radial-gradient(circle at 84% 2%, rgba(90, 113, 54, .11), transparent 29rem),
+        radial-gradient(circle at 8% 38%, rgba(82, 69, 125, .08), transparent 28rem), #090b0f;
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      min-height: 100vh;
+    }
+    .nicegui-content { padding: 0 !important; }
+    .q-focus-helper { opacity: 0 !important; }
+
+    /* Header */
+    .app-header {
+      height: 76px; padding: 0 4vw; color: var(--ink) !important;
+      background: rgba(9, 11, 15, .74) !important;
+      border-bottom: 1px solid rgba(255,255,255,.065);
+      backdrop-filter: blur(22px) saturate(150%); -webkit-backdrop-filter: blur(22px);
+      z-index: 50;
+    }
+    .header-inner { width: min(1440px, 100%); margin: auto; height: 100%; }
+    .brand-mark {
+      width: 37px; height: 37px; border-radius: 11px; display: grid; place-items: center;
+      color: #10130d; background: var(--acid); box-shadow: 0 0 28px rgba(215,255,99,.18);
+      transform: rotate(-3deg);
+    }
+    .brand-name { font-size: 20px; font-weight: 760; letter-spacing: -.55px; }
+    .brand-name span { color: var(--acid); }
+    .nav-pill { color: #a8ada6 !important; border-radius: 12px; font-size: 13px; letter-spacing: .1px; }
+    .nav-pill.active { color: var(--ink) !important; background: rgba(255,255,255,.07); }
+    .add-book-btn {
+      background: var(--acid) !important; color: #14180d !important; font-weight: 750;
+      border-radius: 13px !important; height: 42px; padding-inline: 18px !important;
+      box-shadow: 0 8px 30px rgba(193,234,76,.12);
+    }
+
+    /* Hero */
+    .page-shell { width: min(1440px, 92vw); margin: 0 auto; padding: 118px 0 70px; }
+    .hero-section {
+      position: relative; overflow: hidden; min-height: 390px; padding: clamp(28px, 4vw, 58px);
+      border: 1px solid var(--line); border-radius: 30px;
+      background: linear-gradient(120deg, rgba(22,26,31,.96), rgba(13,16,20,.9));
+      box-shadow: 0 28px 90px rgba(0,0,0,.28);
+    }
+    .hero-section::before {
+      content: ""; position: absolute; width: 480px; height: 480px; right: -120px; top: -240px;
+      border-radius: 50%; background: radial-gradient(circle, rgba(215,255,99,.14), transparent 67%);
+      pointer-events: none;
+    }
+    .hero-section::after {
+      content: ""; position: absolute; width: 260px; height: 260px; left: 43%; bottom: -210px;
+      border: 1px solid rgba(215,255,99,.14); border-radius: 50%; box-shadow: 0 0 0 44px rgba(215,255,99,.018), 0 0 0 88px rgba(215,255,99,.012);
+    }
+    .hero-grid { position: relative; z-index: 1; display: grid; grid-template-columns: 1.2fr .8fr; gap: 64px; align-items: center; width: 100%; }
+    .eyebrow { color: var(--acid); text-transform: uppercase; letter-spacing: 3.2px; font-size: 11px; font-weight: 760; }
+    .hero-title { margin: 14px 0 16px; max-width: 750px; font-size: clamp(42px, 5vw, 76px); line-height: .98; letter-spacing: -4px; font-weight: 720; }
+    .hero-title em { color: var(--acid); font-family: Georgia, serif; font-weight: 400; }
+    .hero-copy { max-width: 590px; color: #979d96; font-size: 16px; line-height: 1.7; }
+    .stats-row { gap: 34px; margin-top: 34px; }
+    .stat-block { min-width: 86px; }
+    .stat-number { font-size: 25px; line-height: 1; font-weight: 720; letter-spacing: -.8px; }
+    .stat-label { margin-top: 8px; color: var(--muted-2); font-size: 10px; text-transform: uppercase; letter-spacing: 1.7px; }
+    .stat-divider { width: 1px; height: 40px; background: var(--line); }
+
+    /* Uploader */
+    .upload-zone { width: 100%; min-height: 245px; border-radius: 22px !important; overflow: hidden; background: transparent !important; box-shadow: none !important; }
+    .upload-zone .q-uploader__header { min-height: 245px; padding: 0 !important; border: 1px dashed rgba(215,255,99,.34); border-radius: 22px; background: rgba(215,255,99,.035) !important; transition: .25s ease; }
+    .upload-zone .q-uploader__header:hover { border-color: rgba(215,255,99,.72); background: rgba(215,255,99,.065) !important; transform: translateY(-2px); }
+    .upload-zone .q-uploader__header-content { min-height: 245px; padding: 28px !important; flex-direction: column; justify-content: center; text-align: center; gap: 9px; }
+    .upload-zone .q-uploader__title { font-size: 16px; font-weight: 700; letter-spacing: -.2px; }
+    .upload-zone .q-uploader__subtitle { color: #7f877d; font-size: 12px; }
+    .upload-zone .q-uploader__list { display: none; }
+    .upload-zone .q-uploader__header .q-btn { color: var(--acid) !important; background: rgba(215,255,99,.1); }
+    .upload-note { color: #636a63; font-size: 10px; letter-spacing: .4px; text-align: center; margin-top: 8px; }
+
+    /* Toolbar */
+    .library-section { padding-top: 68px; }
+    .section-kicker { color: var(--acid); font-size: 10px; font-weight: 750; letter-spacing: 2.6px; text-transform: uppercase; }
+    .section-title { font-size: clamp(30px, 3vw, 43px); font-weight: 700; letter-spacing: -1.8px; margin-top: 5px; }
+    .library-count { color: #6f756f; font-size: 13px; margin-left: 4px; }
+    .toolbar { gap: 12px; }
+    .search-box, .sort-box { border: 1px solid var(--line); background: rgba(255,255,255,.035); border-radius: 14px; min-height: 47px; }
+    .search-box { width: min(310px, 42vw); }
+    .sort-box { width: 175px; }
+    .search-box .q-field__control, .sort-box .q-field__control { color: var(--ink) !important; min-height: 47px; }
+    .search-box .q-field__native, .sort-box .q-field__native, .search-box .q-icon, .sort-box .q-icon { color: #b6bbb4 !important; }
+
+    /* Book grid and cards */
+    .book-grid { display: grid !important; grid-template-columns: repeat(auto-fill, minmax(222px, 1fr)); gap: 32px 25px; margin-top: 34px; width: 100%; }
+    .book-card {
+      width: 100%; padding: 0 !important; overflow: visible !important; border-radius: 20px !important;
+      color: var(--ink) !important; background: transparent !important; box-shadow: none !important;
+      animation: card-in .48s both;
+    }
+    @keyframes card-in { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+    .book-cover-wrap {
+      position: relative; overflow: hidden; width: 100%; aspect-ratio: .69; border-radius: 18px;
+      background: #171b21; box-shadow: 0 17px 35px rgba(0,0,0,.34); transition: transform .35s cubic-bezier(.2,.75,.25,1), box-shadow .35s;
+    }
+    .book-card:hover .book-cover-wrap { transform: translateY(-9px) scale(1.018); box-shadow: 0 28px 55px rgba(0,0,0,.5); }
+    .cover-image { width: 100%; height: 100%; }
+    .cover-image .q-img__image { transition: transform .55s cubic-bezier(.2,.75,.25,1); }
+    .book-card:hover .cover-image .q-img__image { transform: scale(1.045); }
+    .cover-shade { position: absolute; inset: 0; background: linear-gradient(to top, rgba(5,7,9,.96), transparent 62%); opacity: .32; transition: opacity .3s; pointer-events: none; }
+    .book-card:hover .cover-shade { opacity: .88; }
+    .format-badge { position: absolute; left: 13px; top: 13px; border-radius: 8px !important; padding: 6px 8px; color: #15180f !important; background: var(--acid) !important; font-size: 9px; font-weight: 800; letter-spacing: 1px; }
+    .cover-actions { position: absolute; right: 11px; top: 11px; display: flex; gap: 7px; opacity: 0; transform: translateY(-7px); transition: .28s ease; }
+    .book-card:hover .cover-actions { opacity: 1; transform: none; }
+    .cover-icon { width: 36px; height: 36px; color: #fff !important; background: rgba(10,12,15,.7) !important; border: 1px solid rgba(255,255,255,.16); backdrop-filter: blur(10px); }
+    .hover-meta { position: absolute; left: 16px; right: 16px; bottom: 16px; opacity: 0; transform: translateY(12px); transition: .3s ease; }
+    .book-card:hover .hover-meta { opacity: 1; transform: none; }
+    .hover-meta-row { color: #d5d9d2; font-size: 11px; margin-top: 7px; }
+    .hover-meta-row .q-icon { color: var(--acid); opacity: .85; }
+    .book-info { padding: 18px 4px 2px; }
+    .book-title { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; font-size: 16px; font-weight: 690; letter-spacing: -.25px; }
+    .book-author { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #797f79; font-size: 12px; margin-top: 5px; }
+    .book-bottom { width: 100%; margin-top: 14px; }
+    .read-btn { border-radius: 11px !important; min-height: 38px; padding-inline: 15px !important; color: #11150c !important; background: var(--acid) !important; font-size: 11px; font-weight: 800; letter-spacing: .4px; }
+    .more-btn { color: #828882 !important; border: 1px solid var(--line); width: 38px; height: 38px; }
+
+    /* Empty state */
+    .empty-state { grid-column: 1 / -1; min-height: 310px; display: grid; place-items: center; width: 100%; border: 1px dashed rgba(255,255,255,.12); border-radius: 24px; background: rgba(255,255,255,.018); text-align: center; }
+    .empty-orbit { width: 78px; height: 78px; margin: auto; display: grid; place-items: center; border-radius: 50%; border: 1px solid rgba(215,255,99,.25); background: var(--acid-soft); color: var(--acid); box-shadow: 0 0 0 12px rgba(215,255,99,.025); }
+    .empty-title { font-size: 20px; font-weight: 700; margin-top: 22px; }
+    .empty-copy { max-width: 380px; color: #6f766f; font-size: 13px; margin-top: 8px; line-height: 1.6; }
+
+    /* Reader */
+    .reader-dialog-card { width: 100vw !important; height: 100vh !important; max-width: none !important; padding: 0 !important; border-radius: 0 !important; overflow: hidden; color: #e9ece6 !important; background: #0c0f13 !important; }
+    .reader-header { height: 70px; flex: 0 0 70px; width: 100%; padding: 0 24px; border-bottom: 1px solid rgba(255,255,255,.08); background: rgba(13,16,20,.93); }
+    .reader-book-title { max-width: 330px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 700; }
+    .reader-book-author { color: #686f69; font-size: 10px; margin-top: 2px; }
+    .reader-tool { color: #aeb4ad !important; border-radius: 11px; }
+    .reader-download { color: #12160d !important; background: var(--acid) !important; border-radius: 11px !important; font-weight: 750; }
+    .reader-surface { flex: 1 1 auto; min-height: 0; width: 100%; --reader-font-size: 19px; }
+    .reader-layout { flex-wrap: nowrap !important; width: 100%; height: 100%; gap: 0; }
+    .toc-panel { width: 285px; flex: 0 0 285px; height: 100%; padding: 28px 18px; border-right: 1px solid rgba(255,255,255,.07); background: #101319; }
+    .reader-mini-cover { width: 48px; height: 70px; border-radius: 6px; overflow: hidden; box-shadow: 0 8px 18px rgba(0,0,0,.35); }
+    .toc-eyebrow { color: #5f665f; font-size: 9px; letter-spacing: 2px; text-transform: uppercase; margin: 28px 8px 12px; }
+    .toc-scroll { height: calc(100% - 120px); width: 100%; }
+    .toc-button { justify-content: flex-start !important; width: 100%; min-height: 42px; padding: 7px 11px !important; border-radius: 10px !important; color: #747b75 !important; font-size: 11px; text-align: left; }
+    .toc-button .q-btn__content { justify-content: flex-start; flex-wrap: nowrap; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+    .toc-button.active { color: var(--ink) !important; background: rgba(215,255,99,.08) !important; border-left: 2px solid var(--acid); }
+    .reader-main { position: relative; flex: 1 1 auto; min-width: 0; height: 100%; transition: background .25s, color .25s; }
+    .reader-dark .reader-main { color: #dce0da; background: #0c0f13; }
+    .reader-light .reader-main { color: #292d29; background: #f4f1e9; }
+    .reader-progress { position: absolute; top: 0; left: 0; right: 0; z-index: 3; height: 2px !important; color: var(--acid) !important; }
+    .reader-scroll { width: 100%; height: 100%; }
+    .reader-article { width: min(760px, calc(100% - 64px)); margin: 0 auto; padding: 74px 0 130px; }
+    .chapter-label { color: #767d76; font-size: 10px; letter-spacing: 2.5px; text-transform: uppercase; }
+    .chapter-heading { margin: 12px 0 38px; font-family: Georgia, "Times New Roman", serif; font-size: clamp(30px, 4vw, 47px); line-height: 1.13; letter-spacing: -1.3px; }
+    .epub-content { font-family: Georgia, "Times New Roman", serif; font-size: var(--reader-font-size); line-height: 1.85; }
+    .epub-content p { margin: 0 0 1.45em; }
+    .epub-content h1, .epub-content h2, .epub-content h3, .epub-content h4 { margin: 1.7em 0 .75em; font-family: Georgia, serif; line-height: 1.25; }
+    .epub-content img { display: block; max-width: 100%; max-height: 76vh; width: auto; height: auto; margin: 2.5em auto; border-radius: 6px; }
+    .epub-content blockquote { margin: 2em 0; padding: 3px 0 3px 25px; border-left: 2px solid var(--acid); opacity: .84; font-style: italic; }
+    .epub-content a { color: #81a525; text-decoration: underline; text-underline-offset: 3px; }
+    .epub-content table { max-width: 100%; border-collapse: collapse; font-size: .84em; }
+    .epub-content td, .epub-content th { padding: 8px; border: 1px solid currentColor; }
+    .reader-controls { position: absolute; z-index: 5; left: 50%; bottom: 22px; transform: translateX(-50%); min-width: 290px; padding: 8px 11px; border: 1px solid rgba(255,255,255,.1); border-radius: 16px; background: rgba(20,24,29,.86); backdrop-filter: blur(18px); box-shadow: 0 14px 40px rgba(0,0,0,.3); }
+    .page-indicator { min-width: 68px; color: #929890; font-size: 10px; text-align: center; letter-spacing: 1px; }
+
+    /* Gallery and lightbox */
+    .gallery-card { width: 100vw !important; height: 100vh !important; max-width: none !important; padding: 0 !important; border-radius: 0 !important; overflow: hidden; color: var(--ink) !important; background: #0a0c10 !important; }
+    .gallery-header { width: 100%; min-height: 78px; padding: 16px 4vw; border-bottom: 1px solid var(--line); background: rgba(14,17,21,.9); }
+    .gallery-title { font-size: 18px; font-weight: 720; letter-spacing: -.4px; }
+    .gallery-subtitle { color: #6e756f; font-size: 11px; margin-top: 3px; }
+    .gallery-scroll { width: 100%; height: calc(100vh - 78px); }
+    .media-masonry { width: min(1380px, 92vw); margin: 0 auto; padding: 38px 0 80px; columns: 5 220px; column-gap: 18px; }
+    .media-tile { position: relative; break-inside: avoid; overflow: hidden; margin-bottom: 18px; min-height: 120px; border: 1px solid var(--line); border-radius: 16px; background: #15191f; cursor: zoom-in; }
+    .media-image { width: 100%; min-height: 130px; transition: transform .4s ease, filter .3s; }
+    .media-tile:hover .media-image { transform: scale(1.025); filter: brightness(.75); }
+    .media-caption { position: absolute; inset: auto 0 0; padding: 36px 13px 12px; opacity: 0; transform: translateY(5px); transition: .25s; background: linear-gradient(transparent, rgba(5,7,9,.92)); pointer-events: none; }
+    .media-tile:hover .media-caption { opacity: 1; transform: none; }
+    .media-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 650; }
+    .media-detail { color: #949a94; font-size: 9px; margin-top: 3px; }
+    .lightbox-card { width: 100vw !important; height: 100vh !important; max-width: none !important; padding: 0 !important; border-radius: 0 !important; display: grid !important; place-items: center; color: white !important; background: rgba(2,3,5,.96) !important; }
+    .lightbox-image { width: min(90vw, 1500px); height: 82vh; }
+    .lightbox-top { position: absolute; z-index: 2; top: 20px; left: 24px; right: 24px; }
+
+    .loading-card { min-width: 230px; padding: 30px !important; align-items: center; color: var(--ink) !important; background: #171b20 !important; border: 1px solid var(--line); border-radius: 18px !important; }
+    .loading-copy { color: #8d938d; font-size: 12px; margin-top: 13px; }
+    .footer { color: #515751; font-size: 11px; padding: 70px 0 5px; }
+
+    @media (max-width: 900px) {
+      .nav-group { display: none !important; }
+      .hero-grid { grid-template-columns: 1fr; gap: 40px; }
+      .hero-title { letter-spacing: -2.5px; }
+      .toc-panel { display: none !important; }
+      .reader-article { width: min(680px, calc(100% - 40px)); padding-top: 48px; }
+      .reader-book-author, .reader-font-divider { display: none !important; }
+      .reader-book-title { max-width: 170px; }
+    }
+    @media (max-width: 640px) {
+      .app-header { padding: 0 18px; height: 66px; }
+      .brand-name { font-size: 17px; }
+      .add-book-btn { width: 42px; padding: 0 !important; font-size: 0; }
+      .page-shell { width: calc(100vw - 28px); padding-top: 86px; }
+      .hero-section { border-radius: 22px; padding: 28px 20px; }
+      .hero-title { font-size: 43px; }
+      .hero-copy { font-size: 14px; }
+      .stats-row { gap: 15px; justify-content: space-between; }
+      .stat-divider { display: none; }
+      .toolbar-row { align-items: flex-start !important; gap: 18px; }
+      .toolbar { width: 100%; }
+      .search-box { width: calc(100% - 107px); }
+      .sort-box { width: 95px; }
+      .book-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px 14px; }
+      .book-title { font-size: 14px; }
+      .hover-meta, .cover-actions { opacity: 1; transform: none; }
+      .hover-meta { display: none; }
+      .format-badge { font-size: 7px; }
+      .reader-header { padding: 0 10px; }
+      .reader-download span.block { display: none; }
+      .reader-download { width: 40px; padding: 0 !important; }
+      .reader-article { width: calc(100% - 34px); }
+      .reader-controls { min-width: 260px; bottom: 12px; }
+      .media-masonry { columns: 2 130px; column-gap: 10px; padding-top: 18px; }
+      .media-tile { margin-bottom: 10px; border-radius: 11px; }
+    }
+    """,
+    shared=True,
+)
+
+
+def trigger_download(book: BookInfo) -> None:
+    ui.download(f"/api/books/{book.id}/download", filename=book.file_name)
+    ui.notify("Your EPUB download is ready", icon="download", color="positive", position="bottom-right")
+
+
+def format_chapter_count(count: int) -> str:
+    return f"{count} chapter" if count == 1 else f"{count} chapters"
+
+
+@ui.page("/")
+def library_page() -> None:
+    ui.query("body").classes("pylibro-body")
+    state: dict[str, list[BookInfo]] = {"books": library.discover()}
+    uploader_ref: dict[str, object] = {}
+
+    def open_upload_picker() -> None:
+        uploader = uploader_ref.get("uploader")
+        if uploader is not None:
+            uploader.run_method("pickFiles")
+
+    with ui.header().classes("app-header"):
+        with ui.row().classes("header-inner items-center justify-between no-wrap"):
+            with ui.row().classes("items-center no-wrap gap-3"):
+                with ui.element("div").classes("brand-mark"):
+                    ui.icon("auto_stories", size="22px")
+                ui.html("Py<span>Libro</span>").classes("brand-name")
+            with ui.row().classes("nav-group items-center gap-1"):
+                ui.button("Library", icon="grid_view").props("flat no-caps").classes("nav-pill active")
+                ui.button(
+                    "Reader",
+                    icon="menu_book",
+                    on_click=lambda: ui.notify("Choose a book to begin reading", icon="auto_stories"),
+                ).props("flat no-caps").classes("nav-pill")
+                ui.button(
+                    "Media",
+                    icon="photo_library",
+                    on_click=lambda: ui.notify("Open a book's image gallery from its cover", icon="collections"),
+                ).props("flat no-caps").classes("nav-pill")
+            ui.button("Add book", icon="add", on_click=open_upload_picker).props("unelevated no-caps").classes(
+                "add-book-btn"
+            )
+
+    with ui.column().classes("page-shell gap-0"):
+        with ui.element("section").classes("hero-section"):
+            with ui.element("div").classes("hero-grid"):
+                with ui.column().classes("gap-0"):
+                    ui.label("Your private reading space").classes("eyebrow")
+                    ui.html("Stories, <em>beautifully</em><br>kept.").classes("hero-title")
+                    ui.label(
+                        "Collect, explore, and read your EPUB library in a calm, focused space — entirely under your control."
+                    ).classes("hero-copy")
+                    with ui.row().classes("stats-row items-center no-wrap"):
+                        with ui.column().classes("stat-block gap-0"):
+                            books_stat = ui.label("0").classes("stat-number")
+                            ui.label("Books").classes("stat-label")
+                        ui.element("div").classes("stat-divider")
+                        with ui.column().classes("stat-block gap-0"):
+                            chapters_stat = ui.label("0").classes("stat-number")
+                            ui.label("Chapters").classes("stat-label")
+                        ui.element("div").classes("stat-divider")
+                        with ui.column().classes("stat-block gap-0"):
+                            storage_stat = ui.label("0 B").classes("stat-number")
+                            ui.label("On shelf").classes("stat-label")
+                with ui.column().classes("w-full gap-0"):
+                    uploader = (
+                        ui.upload(
+                            label="Drop EPUBs here or choose a file",
+                            multiple=True,
+                            auto_upload=True,
+                            max_file_size=MAX_UPLOAD_MB * 1024 * 1024,
+                            max_total_size=MAX_UPLOAD_MB * 1024 * 1024 * 3,
+                        )
+                        .props("accept=.epub flat dark color=primary")
+                        .classes("upload-zone")
+                    )
+                    uploader_ref["uploader"] = uploader
+                    ui.label(f"EPUB ONLY  ·  UP TO {MAX_UPLOAD_MB} MB PER FILE").classes("upload-note")
+
+        with ui.element("section").classes("library-section"):
+            with ui.row().classes("toolbar-row w-full items-end justify-between"):
+                with ui.column().classes("gap-0"):
+                    ui.label("Curated collection").classes("section-kicker")
+                    with ui.row().classes("items-baseline gap-2"):
+                        ui.label("Your library").classes("section-title")
+                        count_label = ui.label().classes("library-count")
+                with ui.row().classes("toolbar items-center no-wrap"):
+                    search = (
+                        ui.input(placeholder="Search title or author", on_change=lambda: render_books.refresh())
+                        .props("borderless dense dark debounce=250")
+                        .classes("search-box")
+                    )
+                    search.add_slot("prepend", '<q-icon name="search" />')
+                    sort = (
+                        ui.select(
+                            {"recent": "Recent", "title": "Title A–Z", "author": "Author A–Z"},
+                            value="recent",
+                            on_change=lambda: render_books.refresh(),
+                        )
+                        .props("borderless dense dark options-dense")
+                        .classes("sort-box")
+                    )
+
+            async def show_reader(book: BookInfo) -> None:
+                loading = _loading_dialog("Preparing your reading room…")
+                loading.open()
+                try:
+                    chapters = await run.io_bound(library.get_chapters, book.file_path)
+                except EpubError as exc:
+                    ui.notify(str(exc), type="negative", icon="error_outline", position="bottom-right")
+                    return
+                finally:
+                    loading.close()
+                    loading.delete()
+
+                reader = ui.dialog().props('maximized transition-show="slide-left" transition-hide="slide-right"')
+                reader_state = {"index": 0, "font": 19, "light": False}
+                refs: dict[str, object] = {}
+                toc_buttons: list[object] = []
+
+                def show_chapter(index: int) -> None:
+                    index = max(0, min(index, len(chapters) - 1))
+                    reader_state["index"] = index
+                    chapter = chapters[index]
+                    refs["content"].set_content(chapter.html)
+                    refs["heading"].set_text(chapter.title)
+                    refs["chapter_label"].set_text(f"Chapter {index + 1} of {len(chapters)}")
+                    refs["page"].set_text(f"{index + 1}  /  {len(chapters)}")
+                    refs["progress"].set_value((index + 1) / len(chapters))
+                    refs["previous"].set_enabled(index > 0)
+                    refs["next"].set_enabled(index < len(chapters) - 1)
+                    for button_index, button in enumerate(toc_buttons):
+                        button.classes(
+                            add="active" if button_index == index else "",
+                            remove="" if button_index == index else "active",
+                        )
+                    ui.run_javascript(
+                        "const el=document.querySelector('.reader-scroll .q-scrollarea__container'); if(el) el.scrollTo({top:0,behavior:'smooth'});"
+                    )
+
+                def adjust_font(delta: int) -> None:
+                    reader_state["font"] = max(14, min(30, reader_state["font"] + delta))
+                    refs["surface"].style(f"--reader-font-size: {reader_state['font']}px")
+                    refs["font_value"].set_text(str(reader_state["font"]))
+
+                def toggle_reader_theme() -> None:
+                    reader_state["light"] = not reader_state["light"]
+                    if reader_state["light"]:
+                        refs["surface"].classes(add="reader-light", remove="reader-dark")
+                        refs["theme"].props("icon=dark_mode")
+                    else:
+                        refs["surface"].classes(add="reader-dark", remove="reader-light")
+                        refs["theme"].props("icon=light_mode")
+
+                with reader, ui.card().classes("reader-dialog-card"):
+                    with ui.row().classes("reader-header items-center justify-between no-wrap"):
+                        with ui.row().classes("items-center no-wrap gap-3"):
+                            ui.button(icon="arrow_back", on_click=reader.close).props("flat round").classes(
+                                "reader-tool"
+                            )
+                            with ui.column().classes("gap-0"):
+                                ui.label(book.title).classes("reader-book-title")
+                                ui.label(book.author).classes("reader-book-author")
+                        with ui.row().classes("items-center no-wrap gap-1"):
+                            ui.button(icon="text_decrease", on_click=partial(adjust_font, -1)).props(
+                                "flat round"
+                            ).classes("reader-tool")
+                            refs["font_value"] = ui.label("19").classes("reader-font-divider text-xs text-grey-6")
+                            ui.button(icon="text_increase", on_click=partial(adjust_font, 1)).props(
+                                "flat round"
+                            ).classes("reader-tool")
+                            refs["theme"] = (
+                                ui.button(icon="light_mode", on_click=toggle_reader_theme)
+                                .props("flat round")
+                                .classes("reader-tool")
+                            )
+                            ui.button("Download", icon="download", on_click=partial(trigger_download, book)).props(
+                                "unelevated no-caps"
+                            ).classes("reader-download")
+                    refs["surface"] = ui.element("div").classes("reader-surface reader-dark")
+                    with refs["surface"]:
+                        with ui.row().classes("reader-layout"):
+                            with ui.column().classes("toc-panel gap-0"):
+                                with ui.row().classes("items-center no-wrap gap-3"):
+                                    ui.image(book.cover_url).props("fit=cover").classes("reader-mini-cover")
+                                    with ui.column().classes("gap-0"):
+                                        ui.label("Contents").classes("text-sm text-weight-bold")
+                                        ui.label(format_chapter_count(len(chapters))).classes("text-xs text-grey-7")
+                                ui.label("Table of contents").classes("toc-eyebrow")
+                                with ui.scroll_area().classes("toc-scroll"):
+                                    with ui.column().classes("w-full gap-1"):
+                                        for index, chapter in enumerate(chapters):
+                                            toc_buttons.append(
+                                                ui.button(chapter.title, on_click=partial(show_chapter, index))
+                                                .props("flat no-caps align=left")
+                                                .classes("toc-button")
+                                            )
+                            with ui.element("main").classes("reader-main"):
+                                refs["progress"] = (
+                                    ui.linear_progress(value=1 / len(chapters))
+                                    .props("instant-feedback")
+                                    .classes("reader-progress")
+                                )
+                                with ui.scroll_area().classes("reader-scroll"):
+                                    with ui.column().classes("reader-article gap-0"):
+                                        refs["chapter_label"] = ui.label().classes("chapter-label")
+                                        refs["heading"] = ui.label().classes("chapter-heading")
+                                        refs["content"] = ui.html("", sanitize=False).classes("epub-content")
+                                with ui.row().classes("reader-controls items-center justify-center no-wrap"):
+                                    refs["previous"] = (
+                                        ui.button(
+                                            icon="arrow_back", on_click=lambda: show_chapter(reader_state["index"] - 1)
+                                        )
+                                        .props("flat round")
+                                        .classes("reader-tool")
+                                    )
+                                    refs["page"] = ui.label().classes("page-indicator")
+                                    refs["next"] = (
+                                        ui.button(
+                                            icon="arrow_forward",
+                                            on_click=lambda: show_chapter(reader_state["index"] + 1),
+                                        )
+                                        .props("flat round")
+                                        .classes("reader-tool")
+                                    )
+                show_chapter(0)
+                reader.open()
+
+            async def show_gallery(book: BookInfo) -> None:
+                loading = _loading_dialog("Extracting every embedded image…")
+                loading.open()
+                try:
+                    images = await run.io_bound(library.extract_images, book.file_path)
+                except EpubError as exc:
+                    ui.notify(str(exc), type="negative", icon="error_outline", position="bottom-right")
+                    return
+                finally:
+                    loading.close()
+                    loading.delete()
+                if not images:
+                    ui.notify(
+                        "No embedded images were found in this EPUB",
+                        icon="image_not_supported",
+                        position="bottom-right",
+                    )
+                    return
+
+                gallery = ui.dialog().props('maximized transition-show="fade" transition-hide="fade"')
+                lightbox = ui.dialog().props('maximized transition-show="fade" transition-hide="fade"')
+                lightbox_refs: dict[str, object] = {}
+                active_asset: dict[str, ImageAsset | None] = {"value": None}
+
+                def open_lightbox(asset: ImageAsset) -> None:
+                    active_asset["value"] = asset
+                    lightbox_refs["image"].set_source(asset.url)
+                    lightbox_refs["name"].set_text(asset.name)
+                    lightbox.open()
+
+                def download_active_image() -> None:
+                    asset = active_asset["value"]
+                    if asset is not None:
+                        ui.download(asset.url, filename=asset.name)
+
+                with lightbox, ui.card().classes("lightbox-card"):
+                    with ui.row().classes("lightbox-top items-center justify-between no-wrap"):
+                        lightbox_refs["name"] = ui.label().classes("text-sm text-grey-4")
+                        with ui.row().classes("items-center gap-2"):
+                            ui.button(icon="download", on_click=download_active_image).props("flat round color=white")
+                            ui.button(icon="close", on_click=lightbox.close).props("flat round color=white")
+                    lightbox_refs["image"] = ui.image().props("fit=contain").classes("lightbox-image")
+
+                with gallery, ui.card().classes("gallery-card"):
+                    with ui.row().classes("gallery-header items-center justify-between no-wrap"):
+                        with ui.row().classes("items-center no-wrap gap-3"):
+                            ui.button(icon="arrow_back", on_click=gallery.close).props("flat round color=grey-5")
+                            with ui.column().classes("gap-0"):
+                                ui.label(f"Inside {book.title}").classes("gallery-title")
+                                ui.label(
+                                    f"{len(images)} embedded image{'s' if len(images) != 1 else ''} · click any image to inspect"
+                                ).classes("gallery-subtitle")
+                        ui.button("Download EPUB", icon="download", on_click=partial(trigger_download, book)).props(
+                            "unelevated no-caps"
+                        ).classes("reader-download")
+                    with ui.scroll_area().classes("gallery-scroll"):
+                        with ui.element("div").classes("media-masonry"):
+                            for asset in images:
+                                with ui.element("div").classes("media-tile").on("click", partial(open_lightbox, asset)):
+                                    ui.image(asset.url).props("fit=contain loading=lazy").classes("media-image")
+                                    with ui.column().classes("media-caption gap-0"):
+                                        ui.label(asset.name).classes("media-name")
+                                        dimensions = (
+                                            f"{asset.width} × {asset.height}"
+                                            if asset.width and asset.height
+                                            else asset.media_type.split("/")[-1].upper()
+                                        )
+                                        ui.label(f"{dimensions}  ·  {asset.size_display}").classes("media-detail")
+                ui.notify(
+                    f"Extracted {len(images)} images", icon="collections", color="positive", position="bottom-right"
+                )
+                gallery.open()
+
+            def book_card(book: BookInfo, index: int) -> None:
+                with ui.card().props("flat").classes("book-card").style(f"animation-delay:{min(index * 45, 360)}ms"):
+                    with ui.element("div").classes("book-cover-wrap"):
+                        ui.image(book.cover_url).props("fit=cover no-spinner").classes("cover-image")
+                        ui.element("div").classes("cover-shade")
+                        ui.badge("EPUB").classes("format-badge")
+                        with ui.row().classes("cover-actions no-wrap"):
+                            ui.button(icon="photo_library", on_click=partial(show_gallery, book)).props(
+                                "flat round"
+                            ).classes("cover-icon").tooltip("Inspect embedded images")
+                            ui.button(icon="download", on_click=partial(trigger_download, book)).props(
+                                "flat round"
+                            ).classes("cover-icon").tooltip("Download EPUB")
+                        with ui.column().classes("hover-meta gap-0"):
+                            with ui.row().classes("hover-meta-row items-center gap-2 no-wrap"):
+                                ui.icon("person", size="14px")
+                                ui.label(book.author)
+                            with ui.row().classes("hover-meta-row items-center gap-2 no-wrap"):
+                                ui.icon("subject", size="14px")
+                                ui.label(format_chapter_count(book.chapter_count))
+                            with ui.row().classes("hover-meta-row items-center gap-2 no-wrap"):
+                                ui.icon("data_usage", size="14px")
+                                ui.label(book.file_size_display)
+                    with ui.column().classes("book-info gap-0"):
+                        ui.label(book.title).classes("book-title").tooltip(book.title)
+                        ui.label(book.author).classes("book-author")
+                        with ui.row().classes("book-bottom items-center justify-between no-wrap"):
+                            ui.button("Start reading", icon="auto_stories", on_click=partial(show_reader, book)).props(
+                                "unelevated no-caps"
+                            ).classes("read-btn")
+                            ui.button(icon="photo_library", on_click=partial(show_gallery, book)).props(
+                                "flat round"
+                            ).classes("more-btn").tooltip("Media gallery")
+
+            @ui.refreshable
+            def render_books() -> None:
+                query = (search.value or "").casefold().strip()
+                books = [
+                    book
+                    for book in state["books"]
+                    if not query or query in book.title.casefold() or query in book.author.casefold()
+                ]
+                if sort.value == "title":
+                    books.sort(key=lambda book: book.title.casefold())
+                elif sort.value == "author":
+                    books.sort(key=lambda book: book.author.casefold())
+                else:
+                    books.sort(key=lambda book: book.modified_at, reverse=True)
+                count_label.set_text(f"{len(books):02d}")
+                with ui.element("div").classes("book-grid"):
+                    if not books:
+                        with ui.element("div").classes("empty-state"):
+                            with ui.column().classes("items-center gap-0 px-6"):
+                                with ui.element("div").classes("empty-orbit"):
+                                    ui.icon("auto_stories", size="31px")
+                                ui.label("Your next story starts here").classes("empty-title")
+                                copy = (
+                                    "No books match this search. Try a different title or author."
+                                    if query
+                                    else "Drop an EPUB into the upload area above and its cover, chapters, and artwork will appear here."
+                                )
+                                ui.label(copy).classes("empty-copy")
+                                if not query:
+                                    ui.button("Choose an EPUB", icon="add", on_click=open_upload_picker).props(
+                                        "unelevated no-caps"
+                                    ).classes("add-book-btn q-mt-md")
+                    for index, book in enumerate(books):
+                        book_card(book, index)
+
+            def update_stats() -> None:
+                books = state["books"]
+                books_stat.set_text(f"{len(books):02d}")
+                chapters_stat.set_text(str(sum(book.chapter_count for book in books)))
+                storage_stat.set_text(human_size(sum(book.file_size for book in books)))
+
+            async def handle_upload(event: events.UploadEventArguments) -> None:
+                try:
+                    data = await event.file.read()
+                    book = await run.io_bound(library.save_upload, event.file.name, data)
+                    state["books"] = await run.io_bound(library.discover)
+                    update_stats()
+                    render_books.refresh()
+                    ui.notify(
+                        f"“{book.title}” joined your library",
+                        icon="auto_stories",
+                        color="positive",
+                        position="bottom-right",
+                        timeout=3500,
+                    )
+                except EpubError as exc:
+                    ui.notify(str(exc), type="negative", icon="error_outline", position="bottom-right", timeout=5000)
+                except Exception:
+                    ui.notify(
+                        "The upload could not be processed. Please try another EPUB.",
+                        type="negative",
+                        icon="error_outline",
+                        position="bottom-right",
+                    )
+                finally:
+                    uploader.reset()
+
+            uploader.on_upload(handle_upload)
+            uploader.on_rejected(
+                lambda: ui.notify(
+                    f"Only EPUB files up to {MAX_UPLOAD_MB} MB are accepted",
+                    type="warning",
+                    icon="warning_amber",
+                    position="bottom-right",
+                )
+            )
+            update_stats()
+            render_books()
+
+        with ui.row().classes("footer w-full items-center justify-between"):
+            ui.label("PYLIBRO  ·  YOUR LIBRARY, YOUR FILES")
+            ui.label("Made for unhurried reading")
+
+
+def _loading_dialog(message: str):
+    dialog = ui.dialog().props("persistent")
+    with dialog, ui.card().classes("loading-card"):
+        ui.spinner("dots", size="42px", color="primary")
+        ui.label(message).classes("loading-copy")
+    return dialog
+
+
+if __name__ in {"__main__", "__mp_main__"}:
+    ui.run(
+        title="PyLibro — Your EPUB Library",
+        favicon="📚",
+        host=os.getenv("PYLIBRO_HOST", "0.0.0.0"),
+        port=int(os.getenv("PYLIBRO_PORT", "8080")),
+        reload=os.getenv("PYLIBRO_RELOAD", "false").lower() == "true",
+        show=False,
+    )
