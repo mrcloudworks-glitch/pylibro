@@ -8,6 +8,7 @@ A modern, local-first EPUB library, reader, and embedded-media inspector built w
 - Header Reader and Media actions open the currently highlighted book
 - Drag-and-drop multi-file EPUB uploads with archive validation and safe filenames
 - Focused in-app reader with table of contents, chapter navigation, light/dark themes, and adjustable type
+- Bookmarks that remember your chapter, scroll position, font size, and theme between sessions, with "Continue reading" resume buttons
 - Complete embedded-image gallery with masonry layout and full-screen lightbox
 - One-click download actions from the shelf, reader, gallery, and lightbox
 - Send-to-Kindle delivery that emails any EPUB to your device's personal-document address
@@ -20,6 +21,8 @@ A modern, local-first EPUB library, reader, and embedded-media inspector built w
 pylibro/
 ├── app.py             # NiceGUI application and interactive views
 ├── epub_parser.py     # EPUB validation, metadata, chapters, covers, and media
+├── kindle_sender.py   # Optional email-based Send-to-Kindle delivery
+├── reader_state.py    # Persistent per-book reading progress (bookmarks)
 ├── run.sh             # One-command setup and launcher for macOS/Linux
 ├── books/             # Default library directory (uploaded EPUBs are ignored by Git)
 ├── requirements.txt
@@ -94,6 +97,10 @@ export PYLIBRO_KINDLE_SMTP_PASSWORD="your-app-password"
 ```
 
 Two Amazon requirements: the sender address must be listed under **Approved Personal Document E-mail List**, and books must be attached as `.epub` (which PyLibro does). Delivery is asynchronous on Amazon's side — your device may not show the book for a few minutes.
+
+### Bookmarks
+
+The reader saves your place automatically: chapter, position within the chapter, font size, and light/dark theme. Progress is stored locally in `.pylibro_cache/progress.json` (safe to delete). Books with saved progress show a **Ch. X of Y** badge on their cover and a **Continue reading** button, and reopening the book resumes exactly where you left off. You can also hit the bookmark icon in the reader header to save your place (and get a confirmation) at any moment.
 
 Example:
 

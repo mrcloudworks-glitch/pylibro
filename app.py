@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from functools import partial
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from nicegui import app, events, run, ui
 from starlette.formparsers import MultiPartParser
 
 import kindle_sender
+import reader_state
 from epub_parser import BookInfo, EpubError, EpubLibrary, ImageAsset, human_size
 
 APP_DIR = Path(__file__).parent.resolve()
@@ -23,6 +25,8 @@ ALLOW_SERVER_SHUTDOWN = os.getenv("PYLIBRO_ALLOW_SHUTDOWN", "true").lower() == "
 KINDLE_EMAIL_ENABLED = kindle_sender.is_configured()
 
 library = EpubLibrary(LIBRARY_DIR, CACHE_DIR)
+progress_store = reader_state.ReaderState(CACHE_DIR / "progress.json")
+progress_store.load()
 app.add_static_files("/cache", str(CACHE_DIR))
 # Keep modest uploads off RAM while still allowing Starlette to spool efficiently.
 MultiPartParser.spool_max_size = 8 * 1024 * 1024
@@ -196,6 +200,12 @@ ui.add_css(
     .cover-shade { position: absolute; inset: 0; background: linear-gradient(to top, rgba(5,7,9,.96), transparent 62%); opacity: .32; transition: opacity .3s; pointer-events: none; }
     .book-card:hover .cover-shade { opacity: .88; }
     .format-badge { position: absolute; left: 13px; top: 13px; border-radius: 8px !important; padding: 6px 8px; color: #15180f !important; background: var(--acid) !important; font-size: 9px; font-weight: 800; letter-spacing: 1px; pointer-events: none; }
+    .progress-badge {
+      position: absolute; left: 13px; bottom: 13px; z-index: 3; display: flex; align-items: center; gap: 5px;
+      padding: 6px 9px; border-radius: 9px; color: #dff6a0 !important; background: rgba(10, 13, 9, .78);
+      border: 1px solid rgba(215, 255, 99, .34); backdrop-filter: blur(8px); font-size: 10px; font-weight: 700;
+      letter-spacing: .2px; pointer-events: none;
+    }
     .cover-highlight-mark {
       position: absolute; left: 66px; top: 13px; z-index: 3; display: grid; place-items: center;
       width: 26px; height: 26px; color: #11150c; background: var(--acid); border-radius: 50%;
@@ -528,11 +538,52 @@ def library_page() -> None:
                     loading.delete()
 
                 reader = ui.dialog().props('maximized transition-show="slide-left" transition-hide="slide-right"')
-                reader_state = {"index": 0, "font": 19, "light": False}
+                saved = progress_store.get(book.id)
+                reader_state = {
+                    "index": min(saved["index"], max(0, len(chapters) - 1)),
+                    "ratio": saved["ratio"] if 0 <= saved["index"] < len(chapters) else 0.0,
+                    "font": saved["font"],
+                    "light": saved["light"],
+                }
+                initial_ratio = reader_state["ratio"]
                 refs: dict[str, object] = {}
                 toc_buttons: list[object] = []
+                last_persist: dict[str, float] = {"at": 0.0}
 
-                def show_chapter(index: int) -> None:
+                def persist(force: bool = False) -> None:
+                    now = time.monotonic()
+                    if force or now - last_persist["at"] >= 3:
+                        last_persist["at"] = now
+                        progress_store.update(
+                            book.id,
+                            index=reader_state["index"],
+                            ratio=reader_state["ratio"],
+                            font=reader_state["font"],
+                            light=reader_state["light"],
+                        )
+                        progress_store.save()
+
+                def handle_scroll(event: events.ScrollEventArguments) -> None:
+                    reader_state["ratio"] = event.vertical_percentage
+                    persist()
+
+                def save_bookmark() -> None:
+                    progress_store.update(
+                        book.id,
+                        index=reader_state["index"],
+                        ratio=reader_state["ratio"],
+                        font=reader_state["font"],
+                        light=reader_state["light"],
+                    )
+                    progress_store.save()
+                    ui.notify(
+                        f"Bookmark saved — Chapter {reader_state['index'] + 1} of {len(chapters)}",
+                        icon="bookmark",
+                        color="positive",
+                        position="bottom-right",
+                    )
+
+                def show_chapter(index: int, ratio: float | None = None) -> None:
                     index = max(0, min(index, len(chapters) - 1))
                     reader_state["index"] = index
                     chapter = chapters[index]
@@ -548,14 +599,19 @@ def library_page() -> None:
                             add="active" if button_index == index else "",
                             remove="" if button_index == index else "active",
                         )
+                    target = 0.0 if ratio is None else max(0.0, min(ratio, 1.0))
+                    reader_state["ratio"] = target
                     ui.run_javascript(
-                        "const el=document.querySelector('.reader-scroll .q-scrollarea__container'); if(el) el.scrollTo({top:0,behavior:'smooth'});"
+                        "const el=document.querySelector('.reader-scroll .q-scrollarea__container');"
+                        f" if(el) el.scrollTo({{top:(el.scrollHeight-el.clientHeight)*{target},behavior:'auto'}});"
                     )
+                    persist(force=True)
 
                 def adjust_font(delta: int) -> None:
                     reader_state["font"] = max(14, min(30, reader_state["font"] + delta))
                     refs["surface"].style(f"--reader-font-size: {reader_state['font']}px")
                     refs["font_value"].set_text(str(reader_state["font"]))
+                    persist(force=True)
 
                 def toggle_reader_theme() -> None:
                     reader_state["light"] = not reader_state["light"]
@@ -565,6 +621,7 @@ def library_page() -> None:
                     else:
                         refs["surface"].classes(add="reader-dark", remove="reader-light")
                         refs["theme"].props("icon=light_mode")
+                    persist(force=True)
 
                 with reader, ui.card().classes("reader-dialog-card"):
                     with ui.row().classes("reader-header items-center justify-between no-wrap"):
@@ -583,6 +640,9 @@ def library_page() -> None:
                             ui.button(icon="text_increase", on_click=partial(adjust_font, 1)).props(
                                 "flat round"
                             ).classes("reader-tool")
+                            ui.button(icon="bookmark", on_click=save_bookmark).props(
+                                "flat round"
+                            ).classes("reader-tool").tooltip("Save your place")
                             refs["theme"] = (
                                 ui.button(icon="light_mode", on_click=toggle_reader_theme)
                                 .props("flat round")
@@ -592,6 +652,11 @@ def library_page() -> None:
                                 "unelevated no-caps"
                             ).classes("reader-download")
                     refs["surface"] = ui.element("div").classes("reader-surface reader-dark")
+                    refs["surface"].style(f"--reader-font-size: {reader_state['font']}px")
+                    if reader_state["light"]:
+                        refs["surface"].classes(add="reader-light", remove="reader-dark")
+                        refs["theme"].props("icon=dark_mode")
+                    refs["font_value"].set_text(str(reader_state["font"]))
                     with refs["surface"]:
                         with ui.row().classes("reader-layout"):
                             with ui.column().classes("toc-panel gap-0"):
@@ -615,7 +680,7 @@ def library_page() -> None:
                                     .props("instant-feedback")
                                     .classes("reader-progress")
                                 )
-                                with ui.scroll_area().classes("reader-scroll"):
+                                with ui.scroll_area().classes("reader-scroll").on_scroll(handle_scroll):
                                     with ui.column().classes("reader-article gap-0"):
                                         refs["chapter_label"] = ui.label().classes("chapter-label")
                                         refs["heading"] = ui.label().classes("chapter-heading")
@@ -637,7 +702,13 @@ def library_page() -> None:
                                         .props("flat round")
                                         .classes("reader-tool")
                                     )
-                show_chapter(0)
+                show_chapter(reader_state["index"], ratio=initial_ratio)
+
+                def close_reader() -> None:
+                    persist(force=True)
+                    render_books.refresh()
+
+                reader.on("hide", close_reader)
                 reader.open()
 
             async def show_gallery(book: BookInfo) -> None:
@@ -753,6 +824,8 @@ def library_page() -> None:
                     )
 
             def book_card(book: BookInfo, index: int) -> None:
+                entry = progress_store.get(book.id)
+                resume = entry["index"] > 0 or entry["ratio"] > 0.02
                 with ui.card().props("flat").classes("book-card").style(f"animation-delay:{min(index * 45, 360)}ms"):
                     cover = ui.element("div").classes("book-cover-wrap")
                     if highlighted_cover["book_id"] == book.id:
@@ -778,6 +851,10 @@ def library_page() -> None:
                         cover_image.tooltip("Click to highlight cover")
                         ui.element("div").classes("cover-shade")
                         ui.badge("EPUB").classes("format-badge")
+                        if resume:
+                            with ui.element("div").classes("progress-badge"):
+                                ui.icon("bookmark", size="13px")
+                                ui.label(f"Ch. {entry['index'] + 1} of {book.chapter_count}")
                         with ui.element("div").classes("cover-highlight-mark"):
                             ui.icon("check", size="17px")
                         with ui.row().classes("cover-actions no-wrap"):
@@ -795,6 +872,10 @@ def library_page() -> None:
                             with ui.row().classes("hover-meta-row items-center gap-2 no-wrap"):
                                 ui.icon("person", size="14px")
                                 ui.label(book.author)
+                            if resume:
+                                with ui.row().classes("hover-meta-row items-center gap-2 no-wrap"):
+                                    ui.icon("bookmark", size="14px")
+                                    ui.label(f"Resume at chapter {entry['index'] + 1}")
                             with ui.row().classes("hover-meta-row items-center gap-2 no-wrap"):
                                 ui.icon("subject", size="14px")
                                 ui.label(format_chapter_count(book.chapter_count))
@@ -805,9 +886,11 @@ def library_page() -> None:
                         ui.label(book.title).classes("book-title").tooltip(book.title)
                         ui.label(book.author).classes("book-author")
                         with ui.row().classes("book-bottom items-center justify-between no-wrap"):
-                            ui.button("Start reading", icon="auto_stories", on_click=partial(show_reader, book)).props(
-                                "unelevated no-caps"
-                            ).classes("read-btn")
+                            ui.button(
+                                "Continue reading" if resume else "Start reading",
+                                icon="auto_stories",
+                                on_click=partial(show_reader, book),
+                            ).props("unelevated no-caps").classes("read-btn")
                             ui.button(icon="photo_library", on_click=partial(show_gallery, book)).props(
                                 "flat round"
                             ).classes("more-btn").tooltip("Media gallery")
