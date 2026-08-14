@@ -87,8 +87,9 @@ ui.add_css(
     }
     .brand-name { font-size: 20px; font-weight: 760; letter-spacing: -.55px; }
     .brand-name span { color: var(--acid); }
-    .nav-pill { color: #a8ada6 !important; border-radius: 12px; font-size: 13px; letter-spacing: .1px; }
+    .nav-pill { color: #a8ada6 !important; border-radius: 12px; font-size: 13px; letter-spacing: .1px; transition: color .2s, background .2s; }
     .nav-pill.active { color: var(--ink) !important; background: rgba(255,255,255,.07); }
+    .nav-pill.selection-ready { color: var(--acid) !important; background: rgba(215,255,99,.075); }
     .add-book-btn {
       background: var(--acid) !important; color: #14180d !important; font-weight: 750;
       border-radius: 13px !important; height: 42px; padding-inline: 18px !important;
@@ -333,7 +334,26 @@ def library_page() -> None:
     state: dict[str, list[BookInfo]] = {"books": library.discover()}
     highlighted_cover: dict[str, str | None] = {"book_id": None}
     cover_elements = {}
+    selected_action_buttons: list[object] = []
     uploader_ref: dict[str, object] = {}
+
+    def get_highlighted_book() -> BookInfo | None:
+        selected_id = highlighted_cover["book_id"]
+        return next((book for book in state["books"] if book.id == selected_id), None)
+
+    async def open_highlighted_reader() -> None:
+        book = get_highlighted_book()
+        if book is None:
+            ui.notify("Highlight a book cover first", icon="auto_stories", position="bottom-right")
+            return
+        await show_reader(book)
+
+    async def open_highlighted_media() -> None:
+        book = get_highlighted_book()
+        if book is None:
+            ui.notify("Highlight a book cover first", icon="collections", position="bottom-right")
+            return
+        await show_gallery(book)
 
     def open_upload_picker() -> None:
         uploader = uploader_ref.get("uploader")
@@ -382,16 +402,17 @@ def library_page() -> None:
                 ui.html("Py<span>Libro</span>").classes("brand-name")
             with ui.row().classes("nav-group items-center gap-1"):
                 ui.button("Library", icon="grid_view").props("flat no-caps").classes("nav-pill active")
-                ui.button(
-                    "Reader",
-                    icon="menu_book",
-                    on_click=lambda: ui.notify("Choose a book to begin reading", icon="auto_stories"),
-                ).props("flat no-caps").classes("nav-pill")
-                ui.button(
-                    "Media",
-                    icon="photo_library",
-                    on_click=lambda: ui.notify("Open a book's image gallery from its cover", icon="collections"),
-                ).props("flat no-caps").classes("nav-pill")
+                reader_nav = (
+                    ui.button("Reader", icon="menu_book", on_click=open_highlighted_reader)
+                    .props("flat no-caps")
+                    .classes("nav-pill")
+                )
+                media_nav = (
+                    ui.button("Media", icon="photo_library", on_click=open_highlighted_media)
+                    .props("flat no-caps")
+                    .classes("nav-pill")
+                )
+                selected_action_buttons.extend((reader_nav, media_nav))
             with ui.row().classes("header-actions items-center no-wrap gap-2"):
                 if ALLOW_SERVER_SHUTDOWN:
                     ui.button(icon="power_settings_new", on_click=shutdown_dialog.open).props(
@@ -668,6 +689,12 @@ def library_page() -> None:
                 selected_id = highlighted_cover["book_id"]
                 if selected_id in cover_elements:
                     cover_elements[selected_id].classes(add="highlighted-cover")
+
+                for button in selected_action_buttons:
+                    button.classes(
+                        add="selection-ready" if selected_id else "",
+                        remove="" if selected_id else "selection-ready",
+                    )
 
             def book_card(book: BookInfo, index: int) -> None:
                 with ui.card().props("flat").classes("book-card").style(f"animation-delay:{min(index * 45, 360)}ms"):

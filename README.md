@@ -5,6 +5,7 @@ A modern, local-first EPUB library, reader, and embedded-media inspector built w
 ## Highlights
 
 - Responsive cover gallery with metadata, search, sorting, polished hover motion, and click-to-highlight selection
+- Header Reader and Media actions open the currently highlighted book
 - Drag-and-drop multi-file EPUB uploads with archive validation and safe filenames
 - Focused in-app reader with table of contents, chapter navigation, light/dark themes, and adjustable type
 - Complete embedded-image gallery with masonry layout and full-screen lightbox
