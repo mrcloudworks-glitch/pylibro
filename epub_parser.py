@@ -421,16 +421,13 @@ class EpubLibrary:
 
     def _ensure_cover(self, book: epub.EpubBook, book_id: str, title: str, author: str) -> Path:
         output = self.cover_dir / f"{book_id}.webp"
-        fallback = self.cover_dir / f"{book_id}.png"
         if output.exists():
             return output
-        legacy_svg = self.cover_dir / f"{book_id}.svg"
-        if legacy_svg.exists():
-            # Older PyLibro versions wrote SVG placeholders, which some UI image
-            # components cannot render. Regenerate them as PNG so covers always show.
-            legacy_svg.unlink()
-        if fallback.exists():
-            return fallback
+        for legacy_name in (f"{book_id}.svg", f"{book_id}.png"):
+            # Older PyLibro versions wrote SVG/PNG placeholders, which some UI image
+            # components or browsers cannot render. Regenerate them as WEBP so covers
+            # always show in the same format as extracted artwork.
+            (self.cover_dir / legacy_name).unlink(missing_ok=True)
 
         cover_item = self._find_cover_item(book)
         if cover_item is not None:
@@ -451,8 +448,8 @@ class EpubLibrary:
             except (UnidentifiedImageError, OSError, Image.DecompressionBombError):
                 pass
 
-        EpubLibrary._render_placeholder_png(fallback, book_id, title, author)
-        return fallback
+        EpubLibrary._render_placeholder_image(output, book_id, title, author)
+        return output
 
     @staticmethod
     def _find_cover_item(book: epub.EpubBook):
@@ -503,7 +500,7 @@ class EpubLibrary:
             x += draw.textlength(character, font=font) + tracking
 
     @classmethod
-    def _render_placeholder_png(cls, path: Path, book_id: str, title: str, author: str) -> None:
+    def _render_placeholder_image(cls, path: Path, book_id: str, title: str, author: str) -> None:
         palettes = [
             ("#28334a", "#d9ff63"),
             ("#351f45", "#ff9b8b"),
@@ -550,7 +547,7 @@ class EpubLibrary:
         author_color = tuple(round(255 * 0.7 + bottom[i] * 0.3) for i in range(3))
         draw.text((52, 650), author[:36], font=author_font, fill=author_color)
 
-        image.save(path, "PNG", optimize=True)
+        image.save(path, "WEBP", quality=90, method=6)
 
     @staticmethod
     def _wrap_cover_text(value: str, width: int, limit: int) -> list[str]:
