@@ -8,10 +8,10 @@ rewriting the storage layer.
 from __future__ import annotations
 
 import hashlib
-import html
 import io
 import os
 import posixpath
+import random
 import re
 import shutil
 import tempfile
@@ -26,7 +26,7 @@ import bleach
 import ebooklib
 from bs4 import BeautifulSoup
 from ebooklib import epub
-from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 
 MAX_UPLOAD_BYTES = int(os.getenv("PYLIBRO_MAX_UPLOAD_MB", "100")) * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = int(os.getenv("PYLIBRO_MAX_UNCOMPRESSED_MB", "1024")) * 1024 * 1024
@@ -421,9 +421,14 @@ class EpubLibrary:
 
     def _ensure_cover(self, book: epub.EpubBook, book_id: str, title: str, author: str) -> Path:
         output = self.cover_dir / f"{book_id}.webp"
-        fallback = self.cover_dir / f"{book_id}.svg"
+        fallback = self.cover_dir / f"{book_id}.png"
         if output.exists():
             return output
+        legacy_svg = self.cover_dir / f"{book_id}.svg"
+        if legacy_svg.exists():
+            # Older PyLibro versions wrote SVG placeholders, which some UI image
+            # components cannot render. Regenerate them as PNG so covers always show.
+            legacy_svg.unlink()
         if fallback.exists():
             return fallback
 
@@ -446,7 +451,7 @@ class EpubLibrary:
             except (UnidentifiedImageError, OSError, Image.DecompressionBombError):
                 pass
 
-        fallback.write_text(self._placeholder_svg(book_id, title, author), encoding="utf-8")
+        EpubLibrary._render_placeholder_png(fallback, book_id, title, author)
         return fallback
 
     @staticmethod
@@ -465,8 +470,40 @@ class EpubLibrary:
         image_items = list(book.get_items_of_type(ebooklib.ITEM_IMAGE))
         return next((item for item in image_items if "cover" in item.file_name.lower()), None)
 
+    PLACEHOLDER_SIZE = (480, 720)
+    _FONT_CANDIDATES_TITLE = (
+        "/usr/share/fonts/noto-cjk/NotoSerifCJK-SemiBold.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
+        "/usr/share/fonts/TTF/DejaVuSerif-Bold.ttf",
+    )
+    _FONT_CANDIDATES_BODY = (
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    )
+
     @staticmethod
-    def _placeholder_svg(book_id: str, title: str, author: str) -> str:
+    def _load_cover_font(candidates: tuple[str, ...], size: int) -> ImageFont.FreeTypeFont:
+        for path in candidates:
+            try:
+                return ImageFont.truetype(path, size)
+            except OSError:
+                continue
+        return ImageFont.load_default(size=size)
+
+    @staticmethod
+    def _hex_to_rgb(value: str) -> tuple[int, int, int]:
+        return tuple(int(value[i : i + 2], 16) for i in (1, 3, 5))
+
+    @staticmethod
+    def _draw_letterspaced(draw: ImageDraw.ImageDraw, xy: tuple[int, int], text: str, font, fill, tracking: int = 0) -> None:
+        x, y = xy
+        for character in text:
+            draw.text((x, y), character, font=font, fill=fill)
+            x += draw.textlength(character, font=font) + tracking
+
+    @classmethod
+    def _render_placeholder_png(cls, path: Path, book_id: str, title: str, author: str) -> None:
         palettes = [
             ("#28334a", "#d9ff63"),
             ("#351f45", "#ff9b8b"),
@@ -476,19 +513,44 @@ class EpubLibrary:
             ("#3c2134", "#ef9fc7"),
         ]
         background, accent = palettes[int(book_id[:2], 16) % len(palettes)]
+        width, height = cls.PLACEHOLDER_SIZE
+        bottom = (13, 16, 23)
+        top = cls._hex_to_rgb(background)
+        accent_rgb = cls._hex_to_rgb(accent)
+
+        image = Image.new("RGB", (width, height), bottom)
+        draw = ImageDraw.Draw(image)
+        for y in range(height):
+            ratio = y / (height - 1)
+            color = tuple(round(top[i] + (bottom[i] - top[i]) * ratio) for i in range(3))
+            draw.line([(0, y), (width, y)], fill=color)
+
+        rng = random.Random(book_id)
+        for _ in range(1000):
+            x, y = rng.randint(0, width - 1), rng.randint(0, height - 1)
+            base = image.getpixel((x, y))
+            draw.point((x, y), fill=tuple(round(base[i] + (255 - base[i]) * 0.055) for i in range(3)))
+
+        overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        odraw = ImageDraw.Draw(overlay)
+        odraw.rectangle((52, 82, 122, 87), fill=accent_rgb + (255,))
+        odraw.ellipse((371, 57, 441, 127), outline=accent_rgb + (191,), width=2)
+        odraw.ellipse((385, 71, 427, 113), outline=accent_rgb + (102,), width=2)
+        image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
+        draw = ImageDraw.Draw(image)
+
+        label_font = cls._load_cover_font(cls._FONT_CANDIDATES_BODY, 15)
+        title_font = cls._load_cover_font(cls._FONT_CANDIDATES_TITLE, 39)
+        author_font = cls._load_cover_font(cls._FONT_CANDIDATES_BODY, 18)
+
+        cls._draw_letterspaced(draw, (52, 100), "PYLIBRO EDITION", label_font, accent_rgb, tracking=5)
         title_lines = EpubLibrary._wrap_cover_text(title, 18, 4)
-        title_markup = "".join(
-            f'<text x="52" y="{300 + index * 58}" class="title">{html.escape(line)}</text>'
-            for index, line in enumerate(title_lines)
-        )
-        return f'''<svg xmlns="http://www.w3.org/2000/svg" width="480" height="720" viewBox="0 0 480 720">
-<defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="{background}"/><stop offset="1" stop-color="#0d1017"/></linearGradient><pattern id="grain" width="28" height="28" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1" fill="#fff" opacity=".055"/></pattern></defs>
-<rect width="480" height="720" rx="4" fill="url(#bg)"/><rect width="480" height="720" fill="url(#grain)"/>
-<path d="M52 82h70" stroke="{accent}" stroke-width="5"/><circle cx="406" cy="92" r="35" fill="none" stroke="{accent}" stroke-width="2" opacity=".75"/><circle cx="406" cy="92" r="21" fill="none" stroke="{accent}" opacity=".4"/>
-<text x="52" y="126" fill="{accent}" font-family="Arial,sans-serif" font-size="15" letter-spacing="5">PYLIBRO EDITION</text>
-{title_markup}
-<text x="52" y="650" fill="#fff" opacity=".7" font-family="Arial,sans-serif" font-size="18">{html.escape(author[:36])}</text>
-<style>.title{{fill:#fff;font:700 39px Georgia,serif;letter-spacing:-1px}}</style></svg>'''
+        for index, line in enumerate(title_lines):
+            draw.text((52, 258 + index * 58), line, font=title_font, fill=(255, 255, 255))
+        author_color = tuple(round(255 * 0.7 + bottom[i] * 0.3) for i in range(3))
+        draw.text((52, 650), author[:36], font=author_font, fill=author_color)
+
+        image.save(path, "PNG", optimize=True)
 
     @staticmethod
     def _wrap_cover_text(value: str, width: int, limit: int) -> list[str]:
