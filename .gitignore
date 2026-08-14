@@ -8,6 +8,7 @@ venv/
 
 # PyLibro runtime data
 .pylibro_cache/
+.pylibro_data/
 books/*
 !books/.gitkeep
 

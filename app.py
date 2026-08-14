@@ -10,17 +10,31 @@ from pathlib import Path
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from nicegui import app, events, run, ui
+from starlette.concurrency import run_in_threadpool
 from starlette.formparsers import MultiPartParser
 
 from epub_parser import BookInfo, EpubError, EpubLibrary, ImageAsset, human_size
+from kindle_service import (
+    MAX_KINDLE_ATTACHMENT_BYTES,
+    KindleConfigurationError,
+    KindleDeliveryError,
+    KindleDeliveryService,
+    KindleFileError,
+    SMTPSettings,
+)
+from profile_store import ProfileStore, ProfileValidationError
 
 APP_DIR = Path(__file__).parent.resolve()
 LIBRARY_DIR = Path(os.getenv("PYLIBRO_LIBRARY_DIR", APP_DIR / "books"))
 CACHE_DIR = Path(os.getenv("PYLIBRO_CACHE_DIR", APP_DIR / ".pylibro_cache"))
+DATABASE_PATH = Path(os.getenv("PYLIBRO_DATABASE_PATH", APP_DIR / ".pylibro_data" / "pylibro.sqlite3"))
 MAX_UPLOAD_MB = int(os.getenv("PYLIBRO_MAX_UPLOAD_MB", "100"))
 ALLOW_SERVER_SHUTDOWN = os.getenv("PYLIBRO_ALLOW_SHUTDOWN", "true").lower() == "true"
 
 library = EpubLibrary(LIBRARY_DIR, CACHE_DIR)
+profile_store = ProfileStore(DATABASE_PATH)
+smtp_settings = SMTPSettings.from_environment()
+kindle_delivery = KindleDeliveryService(smtp_settings)
 app.add_static_files("/cache", str(CACHE_DIR))
 # Keep modest uploads off RAM while still allowing Starlette to spool efficiently.
 MultiPartParser.spool_max_size = 8 * 1024 * 1024
@@ -36,6 +50,37 @@ def download_endpoint(book_id: str) -> FileResponse:
         filename=book.file_name,
         media_type="application/epub+zip",
     )
+
+
+@app.post("/api/books/{book_id}/send-to-kindle")
+async def send_to_kindle_endpoint(book_id: str) -> dict[str, str]:
+    """Send a library-owned EPUB to the configured local user's Kindle."""
+
+    # PyLibro has one local profile and no account system. Resolving the opaque
+    # ID through EpubLibrary authorizes access to this installation's library
+    # without accepting a user-controlled filesystem path.
+    book = await run_in_threadpool(library.find_by_id, book_id)
+    if book is None:
+        raise HTTPException(status_code=404, detail="Book not found")
+    profile = await run_in_threadpool(profile_store.get_profile)
+    if not profile.kindle_email:
+        raise HTTPException(status_code=409, detail="Configure a Kindle email in Profile settings first.")
+    if book.file_size >= MAX_KINDLE_ATTACHMENT_BYTES:
+        raise HTTPException(status_code=413, detail="Send to Kindle requires an EPUB smaller than 50 MB.")
+    try:
+        await run_in_threadpool(
+            kindle_delivery.send_epub,
+            profile.kindle_email,
+            book.file_path,
+            book.title,
+        )
+    except KindleConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except KindleFileError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except KindleDeliveryError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"status": "accepted", "book_id": book.id, "message": "EPUB accepted by the outbound mail server."}
 
 
 ui.add_head_html(
@@ -95,9 +140,12 @@ ui.add_css(
       border-radius: 13px !important; height: 42px; padding-inline: 18px !important;
       box-shadow: 0 8px 30px rgba(193,234,76,.12);
     }
-    .stop-server-btn {
+    .header-icon-btn {
       width: 42px; height: 42px; color: #929992 !important; border: 1px solid var(--line);
       background: rgba(255,255,255,.025) !important; transition: color .2s, border-color .2s, background .2s;
+    }
+    .settings-btn:hover {
+      color: var(--acid) !important; border-color: rgba(215,255,99,.32); background: rgba(215,255,99,.07) !important;
     }
     .stop-server-btn:hover {
       color: #ff8f86 !important; border-color: rgba(255,105,97,.35); background: rgba(255,105,97,.08) !important;
@@ -114,6 +162,25 @@ ui.add_css(
     .shutdown-title { margin-top: 20px; font-size: 21px; font-weight: 720; letter-spacing: -.5px; }
     .shutdown-copy { margin-top: 8px; color: #878e87; font-size: 13px; line-height: 1.65; }
     .shutdown-confirm { color: #fff !important; background: #d95c55 !important; border-radius: 11px !important; font-weight: 700; }
+    .profile-card {
+      width: min(560px, calc(100vw - 28px)); max-height: calc(100vh - 40px); padding: 0 !important; overflow-x: hidden; overflow-y: auto;
+      color: var(--ink) !important; border: 1px solid var(--line); border-radius: 24px !important;
+      background: #14181e !important; box-shadow: 0 30px 90px rgba(0,0,0,.58) !important;
+    }
+    .profile-header { width: 100%; padding: 24px 26px 19px; border-bottom: 1px solid var(--line); }
+    .profile-title { font-size: 21px; font-weight: 740; letter-spacing: -.55px; }
+    .profile-subtitle { color: #777e77; font-size: 12px; margin-top: 4px; }
+    .profile-body { width: 100%; padding: 24px 26px 26px; }
+    .kindle-input { width: 100%; border: 1px solid var(--line); border-radius: 14px; background: rgba(255,255,255,.035); }
+    .kindle-input .q-field__control, .kindle-input .q-field__native { color: var(--ink) !important; }
+    .kindle-guide { width: 100%; margin-top: 18px; padding: 17px; border: 1px solid rgba(215,255,99,.15); border-radius: 15px; background: rgba(215,255,99,.045); }
+    .kindle-guide-icon { color: var(--acid); margin-top: 1px; }
+    .kindle-guide-title { color: #dfe4dc; font-size: 12px; font-weight: 720; }
+    .kindle-guide-copy { color: #858c84; font-size: 11px; line-height: 1.6; margin-top: 5px; }
+    .sender-address { color: var(--acid); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; word-break: break-all; }
+    .amazon-settings-link { color: #b9d95f !important; font-size: 11px; margin-top: 9px; text-decoration: none; }
+    .profile-save { color: #11150c !important; background: var(--acid) !important; border-radius: 11px !important; font-weight: 750; }
+    .smtp-warning { color: #f1ac78; font-size: 10px; line-height: 1.5; margin-top: 9px; }
 
     /* Hero */
     .page-shell { width: min(1440px, 92vw); margin: 0 auto; padding: 118px 0 70px; }
@@ -228,6 +295,10 @@ ui.add_css(
     .reader-book-author { color: #686f69; font-size: 10px; margin-top: 2px; }
     .reader-tool { color: #aeb4ad !important; border-radius: 11px; }
     .reader-download { color: #12160d !important; background: var(--acid) !important; border-radius: 11px !important; font-weight: 750; }
+    .kindle-send-btn {
+      color: #dce2d8 !important; border: 1px solid rgba(215,255,99,.22); border-radius: 11px !important;
+      background: rgba(215,255,99,.055) !important; font-weight: 680;
+    }
     .reader-surface { flex: 1 1 auto; min-height: 0; width: 100%; --reader-font-size: 19px; }
     .reader-layout { flex-wrap: nowrap !important; width: 100%; height: 100%; gap: 0; }
     .toc-panel { width: 285px; flex: 0 0 285px; height: 100%; padding: 28px 18px; border-right: 1px solid rgba(255,255,255,.07); background: #101319; }
@@ -303,12 +374,15 @@ ui.add_css(
       .sort-box { width: 95px; }
       .book-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px 14px; }
       .book-title { font-size: 14px; }
+      .read-btn span.block { display: none; }
+      .read-btn { width: 42px; padding: 0 !important; }
       .hover-meta, .cover-actions { opacity: 1; transform: none; }
       .hover-meta { display: none; }
       .format-badge { font-size: 7px; }
       .reader-header { padding: 0 10px; }
-      .reader-download span.block { display: none; }
-      .reader-download { width: 40px; padding: 0 !important; }
+      .reader-download span.block, .kindle-send-btn span.block { display: none; }
+      .reader-download, .kindle-send-btn { width: 40px; padding: 0 !important; }
+      .reader-book-meta { display: none !important; }
       .reader-article { width: calc(100% - 34px); }
       .reader-controls { min-width: 260px; bottom: 12px; }
       .media-masonry { columns: 2 130px; column-gap: 10px; padding-top: 18px; }
@@ -336,6 +410,12 @@ def library_page() -> None:
     cover_elements = {}
     selected_action_buttons: list[object] = []
     uploader_ref: dict[str, object] = {}
+    try:
+        smtp_settings.validate()
+    except KindleConfigurationError as exc:
+        smtp_configuration_error = str(exc)
+    else:
+        smtp_configuration_error = ""
 
     def get_highlighted_book() -> BookInfo | None:
         selected_id = highlighted_cover["book_id"]
@@ -359,6 +439,70 @@ def library_page() -> None:
         uploader = uploader_ref.get("uploader")
         if uploader is not None:
             uploader.run_method("pickFiles")
+
+    async def open_profile_settings() -> None:
+        profile = await run.io_bound(profile_store.get_profile)
+        kindle_email_input.set_value(profile.kindle_email)
+        profile_dialog.open()
+
+    async def save_profile_settings() -> None:
+        profile_save_button.props("loading")
+        try:
+            profile = await run.io_bound(profile_store.update_kindle_email, kindle_email_input.value)
+        except ProfileValidationError as exc:
+            ui.notify(str(exc), type="negative", icon="alternate_email", position="bottom-right")
+            return
+        finally:
+            profile_save_button.props(remove="loading")
+        profile_dialog.close()
+        if profile.kindle_email:
+            ui.notify("Kindle email saved", icon="check_circle", color="positive", position="bottom-right")
+        else:
+            ui.notify("Kindle email cleared", icon="info", position="bottom-right")
+
+    async def send_book_to_kindle(book: BookInfo) -> None:
+        profile = await run.io_bound(profile_store.get_profile)
+        if not profile.kindle_email:
+            ui.notify(
+                "Add your @kindle.com address in Profile settings first",
+                type="warning",
+                icon="alternate_email",
+                position="bottom-right",
+            )
+            kindle_email_input.set_value("")
+            profile_dialog.open()
+            return
+        if book.file_size >= MAX_KINDLE_ATTACHMENT_BYTES:
+            ui.notify(
+                "Send to Kindle requires an EPUB smaller than 50 MB",
+                type="negative",
+                icon="warning_amber",
+                position="bottom-right",
+            )
+            return
+
+        loading = _loading_dialog(f"Sending “{book.title}” to Kindle…")
+        loading.open()
+        try:
+            await run.io_bound(
+                kindle_delivery.send_epub,
+                profile.kindle_email,
+                book.file_path,
+                book.title,
+            )
+        except KindleDeliveryError as exc:
+            ui.notify(str(exc), type="negative", icon="error_outline", position="bottom-right", timeout=6500)
+            return
+        finally:
+            loading.close()
+            loading.delete()
+        ui.notify(
+            f"“{book.title}” was accepted for Kindle delivery",
+            icon="send",
+            color="positive",
+            position="bottom-right",
+            timeout=4500,
+        )
 
     async def shutdown_server() -> None:
         shutdown_dialog.close()
@@ -394,6 +538,47 @@ def library_page() -> None:
                 "unelevated no-caps"
             ).classes("shutdown-confirm")
 
+    profile_dialog = ui.dialog().props('transition-show="scale" transition-hide="scale"')
+    with profile_dialog, ui.card().classes("profile-card"):
+        with ui.row().classes("profile-header items-center justify-between no-wrap"):
+            with ui.column().classes("gap-0"):
+                ui.label("Profile & Kindle").classes("profile-title")
+                ui.label("Send books from your shelf without downloading first").classes("profile-subtitle")
+            ui.button(icon="close", on_click=profile_dialog.close).props("flat round color=grey-5")
+        with ui.column().classes("profile-body gap-0"):
+            kindle_email_input = (
+                ui.input(label="Your Send to Kindle email", placeholder="your-name@kindle.com")
+                .props("outlined clearable dark type=email autocomplete=email")
+                .classes("kindle-input")
+            )
+            ui.label("You can clear this field to remove the saved address.").classes("profile-subtitle q-mt-sm")
+            with ui.row().classes("kindle-guide items-start no-wrap gap-3"):
+                ui.icon("verified_user", size="21px").classes("kindle-guide-icon")
+                with ui.column().classes("gap-0"):
+                    ui.label("Approve PyLibro with Amazon first").classes("kindle-guide-title")
+                    ui.label(
+                        "In Amazon, open Manage Your Content and Devices → Preferences → Personal Document Settings, then add this address to your Approved Personal Document E-mail List:"
+                    ).classes("kindle-guide-copy")
+                    if smtp_settings.sender_address:
+                        ui.label(smtp_settings.sender_address).classes("sender-address q-mt-sm")
+                    else:
+                        ui.label("Outbound sender not configured").classes("sender-address q-mt-sm")
+                    if smtp_configuration_error:
+                        ui.label(smtp_configuration_error).classes("smtp-warning")
+                    ui.link(
+                        "Open Amazon Content & Devices settings",
+                        "https://www.amazon.com/hz/mycd/myx#/home/settings",
+                        new_tab=True,
+                    ).classes("amazon-settings-link")
+                    ui.label("Only EPUB files smaller than 50 MB can be sent.").classes("kindle-guide-copy q-mt-sm")
+            with ui.row().classes("w-full justify-end gap-2 q-mt-lg"):
+                ui.button("Cancel", on_click=profile_dialog.close).props("flat no-caps color=grey-5")
+                profile_save_button = (
+                    ui.button("Save Kindle email", icon="save", on_click=save_profile_settings)
+                    .props("unelevated no-caps")
+                    .classes("profile-save")
+                )
+
     with ui.header().classes("app-header"):
         with ui.row().classes("header-inner items-center justify-between no-wrap"):
             with ui.row().classes("items-center no-wrap gap-3"):
@@ -414,10 +599,13 @@ def library_page() -> None:
                 )
                 selected_action_buttons.extend((reader_nav, media_nav))
             with ui.row().classes("header-actions items-center no-wrap gap-2"):
+                ui.button(icon="settings", on_click=open_profile_settings).props(
+                    'flat round aria-label="Open profile and Kindle settings"'
+                ).classes("header-icon-btn settings-btn").tooltip("Profile & Kindle")
                 if ALLOW_SERVER_SHUTDOWN:
                     ui.button(icon="power_settings_new", on_click=shutdown_dialog.open).props(
                         'flat round aria-label="Stop PyLibro server"'
-                    ).classes("stop-server-btn").tooltip("Stop server")
+                    ).classes("header-icon-btn stop-server-btn").tooltip("Stop server")
                 ui.button("Add book", icon="add", on_click=open_upload_picker).props("unelevated no-caps").classes(
                     "add-book-btn"
                 )
@@ -539,7 +727,7 @@ def library_page() -> None:
                             ui.button(icon="arrow_back", on_click=reader.close).props("flat round").classes(
                                 "reader-tool"
                             )
-                            with ui.column().classes("gap-0"):
+                            with ui.column().classes("reader-book-meta gap-0"):
                                 ui.label(book.title).classes("reader-book-title")
                                 ui.label(book.author).classes("reader-book-author")
                         with ui.row().classes("items-center no-wrap gap-1"):
@@ -555,6 +743,11 @@ def library_page() -> None:
                                 .props("flat round")
                                 .classes("reader-tool")
                             )
+                            ui.button(
+                                "Send to Kindle",
+                                icon="send",
+                                on_click=partial(send_book_to_kindle, book),
+                            ).props("flat no-caps").classes("kindle-send-btn")
                             ui.button("Download", icon="download", on_click=partial(trigger_download, book)).props(
                                 "unelevated no-caps"
                             ).classes("reader-download")
@@ -748,9 +941,13 @@ def library_page() -> None:
                             ui.button("Start reading", icon="auto_stories", on_click=partial(show_reader, book)).props(
                                 "unelevated no-caps"
                             ).classes("read-btn")
-                            ui.button(icon="photo_library", on_click=partial(show_gallery, book)).props(
-                                "flat round"
-                            ).classes("more-btn").tooltip("Media gallery")
+                            with ui.row().classes("items-center no-wrap gap-1"):
+                                ui.button(icon="send", on_click=partial(send_book_to_kindle, book)).props(
+                                    'flat round aria-label="Send this EPUB to Kindle"'
+                                ).classes("more-btn").tooltip("Send to Kindle")
+                                ui.button(icon="photo_library", on_click=partial(show_gallery, book)).props(
+                                    "flat round"
+                                ).classes("more-btn").tooltip("Media gallery")
 
             @ui.refreshable
             def render_books() -> None:
