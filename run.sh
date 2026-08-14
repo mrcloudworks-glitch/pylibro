@@ -5,6 +5,14 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
+# Optional local-only settings (see pylibro.env.example); values here are gitignored.
+if [[ -f "$ROOT_DIR/pylibro.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT_DIR/pylibro.env"
+  set +a
+fi
+
 # Steam Deck's steamwebhelper already occupies 8080 — default to 8088.
 export PYLIBRO_PORT="${PYLIBRO_PORT:-8088}"
 BROWSER_URL="http://localhost:${PYLIBRO_PORT}"

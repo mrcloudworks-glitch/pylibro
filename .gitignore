@@ -11,6 +11,9 @@ venv/
 books/*
 !books/.gitkeep
 
+# Local secrets
+pylibro.env
+
 # Editors / OS
 .DS_Store
 .vscode/

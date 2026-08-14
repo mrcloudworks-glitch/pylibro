@@ -10,6 +10,7 @@ A modern, local-first EPUB library, reader, and embedded-media inspector built w
 - Focused in-app reader with table of contents, chapter navigation, light/dark themes, and adjustable type
 - Complete embedded-image gallery with masonry layout and full-screen lightbox
 - One-click download actions from the shelf, reader, gallery, and lightbox
+- Send-to-Kindle delivery that emails any EPUB to your device's personal-document address
 - Automatic metadata and cover extraction, plus generated covers for books without artwork
 - Local-first storage: files remain in your configured library directory
 
@@ -70,6 +71,29 @@ All settings are optional environment variables:
 | `PYLIBRO_HOST` | `0.0.0.0` | Server bind address |
 | `PYLIBRO_PORT` | `8080` | Web server port |
 | `PYLIBRO_RELOAD` | `false` | Enable NiceGUI development reload |
+
+### Send to Kindle
+
+The **Send to Kindle** action appears on every book cover once SMTP settings are configured. It emails the EPUB as an attachment to your device's `@kindle.com` address. Since Amazon retired the official Send-to-Kindle API, this uses the personal-document email route instead.
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `PYLIBRO_KINDLE_EMAIL` | *(empty)* | Your device's `@kindle.com` address (from Amazon Manage Your Content and Devices) |
+| `PYLIBRO_KINDLE_SMTP_HOST` | *(empty)* | SMTP relay, e.g. `smtp.gmail.com` |
+| `PYLIBRO_KINDLE_SMTP_PORT` | `587` | SMTP port — `587` uses STARTTLS, `465` uses implicit TLS |
+| `PYLIBRO_KINDLE_SMTP_USER` | *(empty)* | Authenticated sender address |
+| `PYLIBRO_KINDLE_SMTP_PASSWORD` | *(empty)* | Sender app password (not your account password) |
+
+Example with Gmail:
+
+```bash
+export PYLIBRO_KINDLE_EMAIL="you@kindle.com"
+export PYLIBRO_KINDLE_SMTP_HOST="smtp.gmail.com"
+export PYLIBRO_KINDLE_SMTP_USER="you@gmail.com"
+export PYLIBRO_KINDLE_SMTP_PASSWORD="your-app-password"
+```
+
+Two Amazon requirements: the sender address must be listed under **Approved Personal Document E-mail List**, and books must be attached as `.epub` (which PyLibro does). Delivery is asynchronous on Amazon's side — your device may not show the book for a few minutes.
 
 Example:
 

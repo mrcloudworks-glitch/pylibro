@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse
 from nicegui import app, events, run, ui
 from starlette.formparsers import MultiPartParser
 
+import kindle_sender
 from epub_parser import BookInfo, EpubError, EpubLibrary, ImageAsset, human_size
 
 APP_DIR = Path(__file__).parent.resolve()
@@ -19,6 +20,7 @@ LIBRARY_DIR = Path(os.getenv("PYLIBRO_LIBRARY_DIR", APP_DIR / "books"))
 CACHE_DIR = Path(os.getenv("PYLIBRO_CACHE_DIR", APP_DIR / ".pylibro_cache"))
 MAX_UPLOAD_MB = int(os.getenv("PYLIBRO_MAX_UPLOAD_MB", "100"))
 ALLOW_SERVER_SHUTDOWN = os.getenv("PYLIBRO_ALLOW_SHUTDOWN", "true").lower() == "true"
+KINDLE_EMAIL_ENABLED = kindle_sender.is_configured()
 
 library = EpubLibrary(LIBRARY_DIR, CACHE_DIR)
 app.add_static_files("/cache", str(CACHE_DIR))
@@ -326,6 +328,37 @@ def trigger_download(book: BookInfo) -> None:
 
 def format_chapter_count(count: int) -> str:
     return f"{count} chapter" if count == 1 else f"{count} chapters"
+
+
+async def send_book_to_kindle(book: BookInfo) -> None:
+    loading = _loading_dialog(f"Sending “{book.title}” to your Kindle…")
+    loading.open()
+    outcome: dict[str, str] = {"kind": "ok", "text": ""}
+    try:
+        await run.io_bound(kindle_sender.send_book, book.file_path, book.title)
+    except kindle_sender.KindleConfigError as exc:
+        outcome.update(kind="warning", text=str(exc))
+    except Exception as exc:
+        outcome.update(kind="negative", text=f"Send to Kindle failed: {exc}")
+    finally:
+        loading.close()
+        loading.delete()
+    if outcome["kind"] == "ok":
+        ui.notify(
+            f"“{book.title}” is on its way to {kindle_sender.recipient_email()}",
+            icon="tablet_mac",
+            color="positive",
+            position="bottom-right",
+            timeout=4500,
+        )
+    else:
+        ui.notify(
+            outcome["text"],
+            type=outcome["kind"],
+            icon="tablet_mac" if outcome["kind"] == "warning" else "error_outline",
+            position="bottom-right",
+            timeout=7000,
+        )
 
 
 @ui.page("/")
@@ -680,6 +713,29 @@ def library_page() -> None:
                 )
                 gallery.open()
 
+            def confirm_kindle_send(book: BookInfo) -> None:
+                dialog = ui.dialog().props('persistent transition-show="scale" transition-hide="scale"')
+                with dialog, ui.card().classes("shutdown-card"):
+                    with ui.element("div").classes("shutdown-icon"):
+                        ui.icon("tablet_mac", size="27px")
+                    ui.label("Send to Kindle?").classes("shutdown-title")
+                    ui.label(
+                        f"“{book.title}” will be emailed as an EPUB to {kindle_sender.recipient_email()}. "
+                        "Make sure that address is listed under Approved Personal Document E-mail List in "
+                        "your Amazon account."
+                    ).classes("shutdown-copy")
+                    with ui.row().classes("w-full justify-end gap-2 q-mt-lg"):
+                        ui.button("Cancel", on_click=dialog.close).props("flat no-caps color=grey-5")
+                        ui.button(
+                            "Send now",
+                            icon="tablet_mac",
+                            on_click=lambda: (
+                                dialog.close(),
+                                ui.timer(0.05, lambda: send_book_to_kindle(book), once=True),
+                            ),
+                        ).props("unelevated no-caps").classes("shutdown-confirm")
+                dialog.open()
+
             def toggle_cover_highlight(book_id: str) -> None:
                 previous_id = highlighted_cover["book_id"]
                 if previous_id in cover_elements:
@@ -728,6 +784,10 @@ def library_page() -> None:
                             ui.button(icon="photo_library", on_click=partial(show_gallery, book)).props(
                                 "flat round"
                             ).classes("cover-icon").tooltip("Inspect embedded images")
+                            if KINDLE_EMAIL_ENABLED:
+                                ui.button(icon="tablet_mac", on_click=partial(confirm_kindle_send, book)).props(
+                                    "flat round"
+                                ).classes("cover-icon").tooltip("Send to Kindle")
                             ui.button(icon="download", on_click=partial(trigger_download, book)).props(
                                 "flat round"
                             ).classes("cover-icon").tooltip("Download EPUB")
