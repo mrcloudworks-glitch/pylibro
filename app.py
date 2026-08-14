@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from nicegui import app, events, run, ui
 from starlette.formparsers import MultiPartParser
 
+import cover_store
 import kindle_sender
 import reader_state
 from epub_parser import BookInfo, EpubError, EpubLibrary, ImageAsset, human_size
@@ -27,6 +28,8 @@ KINDLE_EMAIL_ENABLED = kindle_sender.is_configured()
 library = EpubLibrary(LIBRARY_DIR, CACHE_DIR)
 progress_store = reader_state.ReaderState(CACHE_DIR / "progress.json")
 progress_store.load()
+cover_overrides = cover_store.CoverStore(CACHE_DIR / "cover_overrides.json")
+cover_overrides.load()
 app.add_static_files("/cache", str(CACHE_DIR))
 # Keep modest uploads off RAM while still allowing Starlette to spool efficiently.
 MultiPartParser.spool_max_size = 8 * 1024 * 1024
@@ -280,6 +283,10 @@ ui.add_css(
     .media-tile:hover .media-image { transform: scale(1.025); filter: brightness(.75); }
     .media-caption { position: absolute; inset: auto 0 0; padding: 36px 13px 12px; opacity: 0; transform: translateY(5px); transition: .25s; background: linear-gradient(transparent, rgba(5,7,9,.92)); pointer-events: none; }
     .media-tile:hover .media-caption { opacity: 1; transform: none; }
+    .media-tile-actions { position: absolute; right: 10px; top: 10px; z-index: 2; display: flex; gap: 6px; opacity: 0; transform: translateY(-6px); transition: .25s ease; }
+    .media-tile:hover .media-tile-actions { opacity: 1; transform: none; }
+    .media-tile-btn { width: 34px; height: 34px; color: #fff !important; background: rgba(10,12,15,.72) !important; border: 1px solid rgba(255,255,255,.16); backdrop-filter: blur(8px); }
+    .media-tile-btn.is-cover { color: #11150c !important; background: var(--acid) !important; border-color: transparent; }
     .media-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 650; }
     .media-detail { color: #949a94; font-size: 9px; margin-top: 3px; }
     .lightbox-card { width: 100vw !important; height: 100vh !important; max-width: none !important; padding: 0 !important; border-radius: 0 !important; display: grid !important; place-items: center; color: white !important; background: rgba(2,3,5,.96) !important; }
@@ -325,6 +332,7 @@ ui.add_css(
       .reader-controls { min-width: 260px; bottom: 12px; }
       .media-masonry { columns: 2 130px; column-gap: 10px; padding-top: 18px; }
       .media-tile { margin-bottom: 10px; border-radius: 11px; }
+      .media-tile-actions { opacity: 1; transform: none; }
     }
     """,
     shared=True,
@@ -334,6 +342,14 @@ ui.add_css(
 def trigger_download(book: BookInfo) -> None:
     ui.download(f"/api/books/{book.id}/download", filename=book.file_name)
     ui.notify("Your EPUB download is ready", icon="download", color="positive", position="bottom-right")
+
+
+def effective_cover_url(book: BookInfo) -> str:
+    """Return the web-app cover for a book, honoring user cover overrides."""
+    media_path = cover_overrides.get(book.id)
+    if media_path:
+        return f"/cache/media/{book.id}/{media_path}"
+    return book.cover_url
 
 
 def format_chapter_count(count: int) -> str:
@@ -661,7 +677,7 @@ def library_page() -> None:
                         with ui.row().classes("reader-layout"):
                             with ui.column().classes("toc-panel gap-0"):
                                 with ui.row().classes("items-center no-wrap gap-3"):
-                                    ui.image(book.cover_url).props("fit=cover").classes("reader-mini-cover")
+                                    ui.image(effective_cover_url(book)).props("fit=cover").classes("reader-mini-cover")
                                     with ui.column().classes("gap-0"):
                                         ui.label("Contents").classes("text-sm text-weight-bold")
                                         ui.label(format_chapter_count(len(chapters))).classes("text-xs text-grey-7")
@@ -734,6 +750,41 @@ def library_page() -> None:
                 lightbox = ui.dialog().props('maximized transition-show="fade" transition-hide="fade"')
                 lightbox_refs: dict[str, object] = {}
                 active_asset: dict[str, ImageAsset | None] = {"value": None}
+                tile_buttons: dict[str, object] = {}
+                current_override = cover_overrides.get(book.id)
+
+                def media_path(asset: ImageAsset) -> str:
+                    prefix = f"/cache/media/{book.id}/"
+                    return asset.url[len(prefix):] if asset.url.startswith(prefix) else asset.url
+
+                def refresh_cover_buttons() -> None:
+                    override = cover_overrides.get(book.id)
+                    for path, button in tile_buttons.items():
+                        active = path == override
+                        button.props(f"icon={'check' if active else 'add_photo_alternate'}")
+                        button.classes(
+                            add="is-cover" if active else "",
+                            remove="" if active else "is-cover",
+                        )
+                        button.tooltip("Remove as cover" if active else "Set as cover (web app only)")
+
+                def set_as_cover(asset: ImageAsset | None) -> None:
+                    path = media_path(asset) if asset else None
+                    if asset is None or cover_overrides.get(book.id) == path:
+                        cover_overrides.clear(book.id)
+                        message = "Cover reset"
+                    else:
+                        cover_overrides.set(book.id, path)
+                        message = "Cover updated"
+                    cover_overrides.save()
+                    refresh_cover_buttons()
+                    render_books.refresh()
+                    ui.notify(
+                        f"{message} — {book.title}",
+                        icon="auto_stories",
+                        color="positive",
+                        position="bottom-right",
+                    )
 
                 def open_lightbox(asset: ImageAsset) -> None:
                     active_asset["value"] = asset
@@ -766,11 +817,38 @@ def library_page() -> None:
                         ui.button("Download EPUB", icon="download", on_click=partial(trigger_download, book)).props(
                             "unelevated no-caps"
                         ).classes("reader-download")
+                        if current_override:
+                            ui.button(icon="restart_alt", on_click=partial(set_as_cover, None)).props(
+                                "flat round"
+                            ).classes("reader-tool").tooltip("Reset to the original cover")
                     with ui.scroll_area().classes("gallery-scroll"):
                         with ui.element("div").classes("media-masonry"):
                             for asset in images:
+                                asset_path = media_path(asset)
                                 with ui.element("div").classes("media-tile").on("click", partial(open_lightbox, asset)):
                                     ui.image(asset.url).props("fit=contain loading=lazy").classes("media-image")
+                                    with ui.row().classes("media-tile-actions no-wrap"):
+                                        tile_btn = (
+                                            ui.button(
+                                                icon="check" if asset_path == current_override else "add_photo_alternate",
+                                            )
+                                            .props("flat round")
+                                            .classes(
+                                                "media-tile-btn"
+                                                + (" is-cover" if asset_path == current_override else "")
+                                            )
+                                            .tooltip(
+                                                "Remove as cover"
+                                                if asset_path == current_override
+                                                else "Set as cover (web app only)"
+                                            )
+                                        )
+                                        tile_btn.on(
+                                            "click",
+                                            partial(set_as_cover, asset),
+                                            js_handler="(event) => { event.stopPropagation(); emit(); }",
+                                        )
+                                        tile_buttons[asset_path] = tile_btn
                                     with ui.column().classes("media-caption gap-0"):
                                         ui.label(asset.name).classes("media-name")
                                         dimensions = (
@@ -833,7 +911,7 @@ def library_page() -> None:
                     cover_elements[book.id] = cover
                     with cover:
                         cover_image = (
-                            ui.image(book.cover_url)
+                            ui.image(effective_cover_url(book))
                             .props('fit=cover no-spinner role=button tabindex=0 aria-label="Highlight this book cover"')
                             .classes("cover-image")
                             .on("click", partial(toggle_cover_highlight, book.id))

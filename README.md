@@ -9,6 +9,7 @@ A modern, local-first EPUB library, reader, and embedded-media inspector built w
 - Drag-and-drop multi-file EPUB uploads with archive validation and safe filenames
 - Focused in-app reader with table of contents, chapter navigation, light/dark themes, and adjustable type
 - Bookmarks that remember your chapter, scroll position, font size, and theme between sessions, with "Continue reading" resume buttons
+- Set any embedded image as a book's cover in the web app only (the EPUB file itself is never modified)
 - Complete embedded-image gallery with masonry layout and full-screen lightbox
 - One-click download actions from the shelf, reader, gallery, and lightbox
 - Send-to-Kindle delivery that emails any EPUB to your device's personal-document address
@@ -23,6 +24,7 @@ pylibro/
 ├── epub_parser.py     # EPUB validation, metadata, chapters, covers, and media
 ├── kindle_sender.py   # Optional email-based Send-to-Kindle delivery
 ├── reader_state.py    # Persistent per-book reading progress (bookmarks)
+├── cover_store.py     # Web-app-only cover overrides from embedded images
 ├── run.sh             # One-command setup and launcher for macOS/Linux
 ├── books/             # Default library directory (uploaded EPUBs are ignored by Git)
 ├── requirements.txt
