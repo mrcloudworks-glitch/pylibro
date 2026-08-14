@@ -178,16 +178,32 @@ ui.add_css(
       background: #171b21; box-shadow: 0 17px 35px rgba(0,0,0,.34); transition: transform .35s cubic-bezier(.2,.75,.25,1), box-shadow .35s;
     }
     .book-card:hover .book-cover-wrap { transform: translateY(-9px) scale(1.018); box-shadow: 0 28px 55px rgba(0,0,0,.5); }
-    .cover-image { width: 100%; height: 100%; }
-    .cover-image .q-img__image { transition: transform .55s cubic-bezier(.2,.75,.25,1); }
-    .book-card:hover .cover-image .q-img__image { transform: scale(1.045); }
+    .book-cover-wrap.highlighted-cover {
+      transform: translateY(-7px) scale(1.015);
+      box-shadow: 0 0 0 3px var(--acid), 0 0 0 9px rgba(215,255,99,.11), 0 28px 58px rgba(0,0,0,.52), 0 0 42px rgba(215,255,99,.16);
+    }
+    .book-card:hover .book-cover-wrap.highlighted-cover {
+      transform: translateY(-10px) scale(1.022);
+      box-shadow: 0 0 0 3px var(--acid), 0 0 0 10px rgba(215,255,99,.14), 0 34px 68px rgba(0,0,0,.58), 0 0 52px rgba(215,255,99,.2);
+    }
+    .cover-image { width: 100%; height: 100%; cursor: pointer; border-radius: inherit; }
+    .cover-image:focus-visible { outline: 3px solid var(--acid); outline-offset: -5px; }
+    .cover-image .q-img__image { transition: transform .55s cubic-bezier(.2,.75,.25,1), filter .35s; }
+    .book-card:hover .cover-image .q-img__image, .highlighted-cover .cover-image .q-img__image { transform: scale(1.045); }
     .cover-shade { position: absolute; inset: 0; background: linear-gradient(to top, rgba(5,7,9,.96), transparent 62%); opacity: .32; transition: opacity .3s; pointer-events: none; }
     .book-card:hover .cover-shade { opacity: .88; }
-    .format-badge { position: absolute; left: 13px; top: 13px; border-radius: 8px !important; padding: 6px 8px; color: #15180f !important; background: var(--acid) !important; font-size: 9px; font-weight: 800; letter-spacing: 1px; }
+    .format-badge { position: absolute; left: 13px; top: 13px; border-radius: 8px !important; padding: 6px 8px; color: #15180f !important; background: var(--acid) !important; font-size: 9px; font-weight: 800; letter-spacing: 1px; pointer-events: none; }
+    .cover-highlight-mark {
+      position: absolute; left: 66px; top: 13px; z-index: 3; display: grid; place-items: center;
+      width: 26px; height: 26px; color: #11150c; background: var(--acid); border-radius: 50%;
+      box-shadow: 0 5px 18px rgba(0,0,0,.35); opacity: 0; transform: scale(.55) rotate(-20deg);
+      transition: opacity .24s ease, transform .32s cubic-bezier(.2,.9,.3,1.4); pointer-events: none;
+    }
+    .highlighted-cover .cover-highlight-mark { opacity: 1; transform: scale(1) rotate(0); }
     .cover-actions { position: absolute; right: 11px; top: 11px; display: flex; gap: 7px; opacity: 0; transform: translateY(-7px); transition: .28s ease; }
     .book-card:hover .cover-actions { opacity: 1; transform: none; }
     .cover-icon { width: 36px; height: 36px; color: #fff !important; background: rgba(10,12,15,.7) !important; border: 1px solid rgba(255,255,255,.16); backdrop-filter: blur(10px); }
-    .hover-meta { position: absolute; left: 16px; right: 16px; bottom: 16px; opacity: 0; transform: translateY(12px); transition: .3s ease; }
+    .hover-meta { position: absolute; left: 16px; right: 16px; bottom: 16px; opacity: 0; transform: translateY(12px); transition: .3s ease; pointer-events: none; }
     .book-card:hover .hover-meta { opacity: 1; transform: none; }
     .hover-meta-row { color: #d5d9d2; font-size: 11px; margin-top: 7px; }
     .hover-meta-row .q-icon { color: var(--acid); opacity: .85; }
@@ -315,6 +331,8 @@ def format_chapter_count(count: int) -> str:
 def library_page() -> None:
     ui.query("body").classes("pylibro-body")
     state: dict[str, list[BookInfo]] = {"books": library.discover()}
+    highlighted_cover: dict[str, str | None] = {"book_id": None}
+    cover_elements = {}
     uploader_ref: dict[str, object] = {}
 
     def open_upload_picker() -> None:
@@ -641,12 +659,44 @@ def library_page() -> None:
                 )
                 gallery.open()
 
+            def toggle_cover_highlight(book_id: str) -> None:
+                previous_id = highlighted_cover["book_id"]
+                if previous_id in cover_elements:
+                    cover_elements[previous_id].classes(remove="highlighted-cover")
+
+                highlighted_cover["book_id"] = None if previous_id == book_id else book_id
+                selected_id = highlighted_cover["book_id"]
+                if selected_id in cover_elements:
+                    cover_elements[selected_id].classes(add="highlighted-cover")
+
             def book_card(book: BookInfo, index: int) -> None:
                 with ui.card().props("flat").classes("book-card").style(f"animation-delay:{min(index * 45, 360)}ms"):
-                    with ui.element("div").classes("book-cover-wrap"):
-                        ui.image(book.cover_url).props("fit=cover no-spinner").classes("cover-image")
+                    cover = ui.element("div").classes("book-cover-wrap")
+                    if highlighted_cover["book_id"] == book.id:
+                        cover.classes(add="highlighted-cover")
+                    cover_elements[book.id] = cover
+                    with cover:
+                        cover_image = (
+                            ui.image(book.cover_url)
+                            .props('fit=cover no-spinner role=button tabindex=0 aria-label="Highlight this book cover"')
+                            .classes("cover-image")
+                            .on("click", partial(toggle_cover_highlight, book.id))
+                            .on(
+                                "keydown",
+                                partial(toggle_cover_highlight, book.id),
+                                js_handler="""(event) => {
+                                    if (event.key === 'Enter' || event.key === ' ') {
+                                        event.preventDefault();
+                                        emit();
+                                    }
+                                }""",
+                            )
+                        )
+                        cover_image.tooltip("Click to highlight cover")
                         ui.element("div").classes("cover-shade")
                         ui.badge("EPUB").classes("format-badge")
+                        with ui.element("div").classes("cover-highlight-mark"):
+                            ui.icon("check", size="17px")
                         with ui.row().classes("cover-actions no-wrap"):
                             ui.button(icon="photo_library", on_click=partial(show_gallery, book)).props(
                                 "flat round"
@@ -677,6 +727,7 @@ def library_page() -> None:
 
             @ui.refreshable
             def render_books() -> None:
+                cover_elements.clear()
                 query = (search.value or "").casefold().strip()
                 books = [
                     book
