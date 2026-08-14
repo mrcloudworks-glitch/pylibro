@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=PyLibro
+Comment=EPUB library and reader
+Path=/home/deck/Documents/Allen/pylibro
+Exec=konsole --hide-menubar --hide-tabbar -e /home/deck/Documents/Allen/pylibro/run.sh
+Icon=library
+Terminal=false
+Categories=Office;Viewer;
