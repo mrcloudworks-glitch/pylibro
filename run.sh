@@ -8,6 +8,7 @@ cd "$ROOT_DIR"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 VENV_DIR="${PYLIBRO_VENV_DIR:-$ROOT_DIR/.venv}"
 VENV_PYTHON="$VENV_DIR/bin/python"
+export PYLIBRO_OPEN_BROWSER="${PYLIBRO_OPEN_BROWSER:-true}"
 
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
   echo "PyLibro requires Python 3.10 or newer, but '$PYTHON_BIN' was not found." >&2
@@ -36,5 +37,10 @@ if [[ "$REQUIREMENTS_HASH" != "$INSTALLED_HASH" ]]; then
 fi
 
 echo "[PyLibro] Starting on http://${PYLIBRO_HOST:-0.0.0.0}:${PYLIBRO_PORT:-8080}"
+case "$PYLIBRO_OPEN_BROWSER" in
+  [Tt][Rr][Uu][Ee])
+    echo "[PyLibro] Your default browser will open automatically when the server is ready."
+    ;;
+esac
 echo "[PyLibro] Press Ctrl+C here, or use the power button in the web app, to stop."
 exec "$VENV_PYTHON" app.py

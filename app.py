@@ -774,5 +774,5 @@ if __name__ in {"__main__", "__mp_main__"}:
         host=os.getenv("PYLIBRO_HOST", "0.0.0.0"),
         port=int(os.getenv("PYLIBRO_PORT", "8080")),
         reload=os.getenv("PYLIBRO_RELOAD", "false").lower() == "true",
-        show=False,
+        show=os.getenv("PYLIBRO_OPEN_BROWSER", "false").lower() == "true",
     )

@@ -38,7 +38,7 @@ cd pylibro
 ./run.sh
 ```
 
-`run.sh` creates `.venv`, installs or refreshes dependencies when `requirements.txt` changes, and starts the application. To use a specific Python executable, run `PYTHON_BIN=python3.12 ./run.sh`.
+`run.sh` creates `.venv`, installs or refreshes dependencies when `requirements.txt` changes, starts the application, and opens it in your default browser as soon as the server is ready. To use a specific Python executable, run `PYTHON_BIN=python3.12 ./run.sh`. To start without opening a browser, run `PYLIBRO_OPEN_BROWSER=false ./run.sh`.
 
 ### Manual start / Windows
 
@@ -65,6 +65,7 @@ All settings are optional environment variables:
 | `PYLIBRO_MAX_UPLOAD_MB` | `100` | Maximum uploaded EPUB size per file |
 | `PYLIBRO_MAX_UNCOMPRESSED_MB` | `1024` | Archive expansion safety limit |
 | `PYLIBRO_ALLOW_SHUTDOWN` | `true` | Show the server-wide shutdown control in the web header |
+| `PYLIBRO_OPEN_BROWSER` | `true` with `run.sh` | Open the app in the default browser when the server is ready |
 | `PYLIBRO_HOST` | `0.0.0.0` | Server bind address |
 | `PYLIBRO_PORT` | `8080` | Web server port |
 | `PYLIBRO_RELOAD` | `false` | Enable NiceGUI development reload |
