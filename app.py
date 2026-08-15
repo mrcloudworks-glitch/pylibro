@@ -16,6 +16,7 @@ from starlette.formparsers import MultiPartParser
 import cover_store
 import kindle_sender
 import reader_state
+import title_store
 from epub_parser import BookInfo, EpubError, EpubLibrary, ImageAsset, human_size
 
 APP_DIR = Path(__file__).parent.resolve()
@@ -30,6 +31,8 @@ progress_store = reader_state.ReaderState(CACHE_DIR / "progress.json")
 progress_store.load()
 cover_overrides = cover_store.CoverStore(CACHE_DIR / "cover_overrides.json")
 cover_overrides.load()
+title_overrides = title_store.TitleStore(CACHE_DIR / "title_overrides.json")
+title_overrides.load()
 app.add_static_files("/cache", str(CACHE_DIR))
 # Keep modest uploads off RAM while still allowing Starlette to spool efficiently.
 MultiPartParser.spool_max_size = 8 * 1024 * 1024
@@ -123,6 +126,7 @@ ui.add_css(
     .shutdown-title { margin-top: 20px; font-size: 21px; font-weight: 720; letter-spacing: -.5px; }
     .shutdown-copy { margin-top: 8px; color: #878e87; font-size: 13px; line-height: 1.65; }
     .shutdown-confirm { color: #fff !important; background: #d95c55 !important; border-radius: 11px !important; font-weight: 700; }
+    .rename-save-btn { color: #11150c !important; background: var(--acid) !important; border-radius: 11px !important; font-weight: 750; min-height: 40px; padding-inline: 18px !important; }
 
     /* Hero */
     .page-shell { width: min(1440px, 92vw); margin: 0 auto; padding: 118px 0 70px; }
@@ -224,7 +228,14 @@ ui.add_css(
     .hover-meta-row { color: #d5d9d2; font-size: 11px; margin-top: 7px; }
     .hover-meta-row .q-icon { color: var(--acid); opacity: .85; }
     .book-info { padding: 18px 4px 2px; }
-    .book-title { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; font-size: 16px; font-weight: 690; letter-spacing: -.25px; }
+    .book-title-row { width: 100%; }
+    .book-title { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; flex: 1 1 auto; min-width: 0; font-size: 16px; font-weight: 690; letter-spacing: -.25px; }
+    .title-edit-btn {
+      flex: 0 0 auto; width: 24px; height: 24px; color: #6f756f !important;
+      border-radius: 8px !important; transition: color .2s, background .2s, opacity .2s;
+    }
+    .book-card:hover .title-edit-btn { color: #a6aca5 !important; }
+    .title-edit-btn:hover { color: var(--ink) !important; background: rgba(255,255,255,.08) !important; }
     .book-author { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #797f79; font-size: 12px; margin-top: 5px; }
     .book-bottom { width: 100%; margin-top: 14px; }
     .read-btn { border-radius: 11px !important; min-height: 38px; padding-inline: 15px !important; color: #11150c !important; background: var(--acid) !important; font-size: 11px; font-weight: 800; letter-spacing: .4px; }
@@ -352,16 +363,21 @@ def effective_cover_url(book: BookInfo) -> str:
     return book.cover_url
 
 
+def effective_title(book: BookInfo) -> str:
+    """Return the library display title for a book, honoring user renames."""
+    return title_overrides.get(book.id) or book.title
+
+
 def format_chapter_count(count: int) -> str:
     return f"{count} chapter" if count == 1 else f"{count} chapters"
 
 
 async def send_book_to_kindle(book: BookInfo) -> None:
-    loading = _loading_dialog(f"Sending “{book.title}” to your Kindle…")
+    loading = _loading_dialog(f"Sending “{effective_title(book)}” to your Kindle…")
     loading.open()
     outcome: dict[str, str] = {"kind": "ok", "text": ""}
     try:
-        await run.io_bound(kindle_sender.send_book, book.file_path, book.title)
+        await run.io_bound(kindle_sender.send_book, book.file_path, effective_title(book))
     except kindle_sender.KindleConfigError as exc:
         outcome.update(kind="warning", text=str(exc))
     except Exception as exc:
@@ -371,7 +387,7 @@ async def send_book_to_kindle(book: BookInfo) -> None:
         loading.delete()
     if outcome["kind"] == "ok":
         ui.notify(
-            f"“{book.title}” is on its way to {kindle_sender.recipient_email()}",
+            f"“{effective_title(book)}” is on its way to {kindle_sender.recipient_email()}",
             icon="tablet_mac",
             color="positive",
             position="bottom-right",
@@ -646,7 +662,7 @@ def library_page() -> None:
                                 "reader-tool"
                             )
                             with ui.column().classes("gap-0"):
-                                ui.label(book.title).classes("reader-book-title")
+                                ui.label(effective_title(book)).classes("reader-book-title")
                                 ui.label(book.author).classes("reader-book-author")
                         with ui.row().classes("items-center no-wrap gap-1"):
                             ui.button(icon="text_decrease", on_click=partial(adjust_font, -1)).props(
@@ -780,7 +796,7 @@ def library_page() -> None:
                     refresh_cover_buttons()
                     render_books.refresh()
                     ui.notify(
-                        f"{message} — {book.title}",
+                        f"{message} — {effective_title(book)}",
                         icon="auto_stories",
                         color="positive",
                         position="bottom-right",
@@ -810,7 +826,7 @@ def library_page() -> None:
                         with ui.row().classes("items-center no-wrap gap-3"):
                             ui.button(icon="arrow_back", on_click=gallery.close).props("flat round color=grey-5")
                             with ui.column().classes("gap-0"):
-                                ui.label(f"Inside {book.title}").classes("gallery-title")
+                                ui.label(f"Inside {effective_title(book)}").classes("gallery-title")
                                 ui.label(
                                     f"{len(images)} embedded image{'s' if len(images) != 1 else ''} · click any image to inspect"
                                 ).classes("gallery-subtitle")
@@ -869,7 +885,7 @@ def library_page() -> None:
                         ui.icon("tablet_mac", size="27px")
                     ui.label("Send to Kindle?").classes("shutdown-title")
                     ui.label(
-                        f"“{book.title}” will be emailed as an EPUB to {kindle_sender.recipient_email()}. "
+                        f"“{effective_title(book)}” will be emailed as an EPUB to {kindle_sender.recipient_email()}. "
                         "Make sure that address is listed under Approved Personal Document E-mail List in "
                         "your Amazon account."
                     ).classes("shutdown-copy")
@@ -883,6 +899,51 @@ def library_page() -> None:
                                 ui.timer(0.05, lambda: send_book_to_kindle(book), once=True),
                             ),
                         ).props("unelevated no-caps").classes("shutdown-confirm")
+                dialog.open()
+
+            def edit_title(book: BookInfo) -> None:
+                dialog = ui.dialog().props('transition-show="scale" transition-hide="scale"')
+                with dialog, ui.card().classes("shutdown-card"):
+                    with ui.element("div").classes("shutdown-icon"):
+                        ui.icon("edit", size="27px")
+                    ui.label("Rename book").classes("shutdown-title")
+                    ui.label(
+                        "This changes the title shown in your PyLibro library only — the EPUB file itself is never modified."
+                    ).classes("shutdown-copy")
+                    title_input = ui.input(value=effective_title(book)).props("outlined dense dark").classes(
+                        "w-full q-mt-md"
+                    )
+
+                    def save() -> None:
+                        new_title = (title_input.value or "").strip()
+                        if not new_title:
+                            ui.notify(
+                                "The title can't be empty",
+                                type="warning",
+                                icon="warning_amber",
+                                position="bottom-right",
+                            )
+                            return
+                        if new_title == book.title:
+                            title_overrides.clear(book.id)
+                        else:
+                            title_overrides.set(book.id, new_title)
+                        title_overrides.save()
+                        dialog.close()
+                        render_books.refresh()
+                        ui.notify(
+                            f"Renamed to “{new_title}”",
+                            icon="edit",
+                            color="positive",
+                            position="bottom-right",
+                        )
+
+                    title_input.on("keydown.enter", save)
+                    with ui.row().classes("w-full justify-end gap-2 q-mt-lg"):
+                        ui.button("Cancel", on_click=dialog.close).props("flat no-caps color=grey-5")
+                        ui.button("Save", icon="check", on_click=save).props("unelevated no-caps").classes(
+                            "rename-save-btn"
+                        )
                 dialog.open()
 
             def toggle_cover_highlight(book_id: str) -> None:
@@ -961,7 +1022,11 @@ def library_page() -> None:
                                 ui.icon("data_usage", size="14px")
                                 ui.label(book.file_size_display)
                     with ui.column().classes("book-info gap-0"):
-                        ui.label(book.title).classes("book-title").tooltip(book.title)
+                        with ui.row().classes("book-title-row items-center no-wrap gap-1"):
+                            ui.label(effective_title(book)).classes("book-title").tooltip(effective_title(book))
+                            ui.button(icon="edit", on_click=partial(edit_title, book)).props(
+                                "flat round dense size=sm"
+                            ).classes("title-edit-btn").tooltip("Rename title (library only)")
                         ui.label(book.author).classes("book-author")
                         with ui.row().classes("book-bottom items-center justify-between no-wrap"):
                             ui.button(
@@ -980,10 +1045,10 @@ def library_page() -> None:
                 books = [
                     book
                     for book in state["books"]
-                    if not query or query in book.title.casefold() or query in book.author.casefold()
+                    if not query or query in effective_title(book).casefold() or query in book.author.casefold()
                 ]
                 if sort.value == "title":
-                    books.sort(key=lambda book: book.title.casefold())
+                    books.sort(key=lambda book: effective_title(book).casefold())
                 elif sort.value == "author":
                     books.sort(key=lambda book: book.author.casefold())
                 else:
@@ -1023,7 +1088,7 @@ def library_page() -> None:
                     update_stats()
                     render_books.refresh()
                     ui.notify(
-                        f"“{book.title}” joined your library",
+                        f"“{effective_title(book)}” joined your library",
                         icon="auto_stories",
                         color="positive",
                         position="bottom-right",
